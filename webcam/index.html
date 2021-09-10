@@ -9,22 +9,14 @@
 <body>
 	<div id="qrcode"></div>
 	<button id="start">start</button>
-	<script src="peerjs.min.js"></script>
-	<script src="qrcode.js"></script>
+	<script src="../peerjs.min.js"></script>
+	<script src="../qrcode.js"></script>
 	<script>
 		var peer = new Peer();
 		var seed = location.search.split('=')[1];
 
 		peer.on('open', function(id) {
 			if (seed) {
-				// var conn = peer.connect(seed);
-				
-				// conn.on('open', function() {
-
-				// 	// Send messages
-				// 	conn.send('Hello!');
-				// });
-
 				start.onclick = function () {
 					var constraints = { audio: false, video: { facingMode: "user" } };
 
@@ -49,16 +41,6 @@
 			}
 			else {
 				drawQR(id);
-
-				// peer.on('connection', function(conn) {
-				// 	conn.on('open', function() {
-
-				// 		// Receive messages
-				// 		conn.on('data', function(data) {
-				// 			console.log('Received', data);
-				// 		});
-				// 	});
-				// });
 
 				peer.on('call', function(call) {
 
