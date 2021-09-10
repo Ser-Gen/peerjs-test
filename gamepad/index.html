@@ -1,12 +1,55 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+	<meta charset="UTF-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>test-webcam</title>
 </head>
 <body>
-    
+	<div id="qrcode"></div>
+	<button id="start">start</button>
+	<script src="peerjs.min.js"></script>
+	<script src="qrcode.js"></script>
+	<script>
+		var peer = new Peer();
+		var seed = location.search.split('=')[1];
+
+		peer.on('open', function(id) {
+			if (seed) {
+				var conn = peer.connect(seed);
+				
+				conn.on('open', function() {
+
+					// Send messages
+					conn.send('Hello!');
+				});
+			}
+			else {
+				drawQR(id);
+
+				peer.on('connection', function(conn) {
+					conn.on('open', function() {
+
+						// Receive messages
+						conn.on('data', function(data) {
+							console.log('Received', data);
+						});
+					});
+				});
+			}
+		});
+
+		function drawQR (id) {
+			var qrcode = new QRCode(document.getElementById("qrcode"), {
+				text: location.href +'?peer='+ id,
+				width: 256,
+				height: 256,
+				colorDark : "#000000",
+				colorLight : "#ffffff",
+				correctLevel : QRCode.CorrectLevel.H
+			});
+		}
+	</script>
 </body>
 </html>
