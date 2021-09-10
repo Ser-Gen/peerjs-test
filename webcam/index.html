@@ -43,21 +43,24 @@
 				drawQR(id);
 
 				peer.on('call', function(call) {
+					document.getElementById("qrcode").hidden = true;
 
 					// Answer the call, providing our mediaStream
 					call.answer();
 
-					call.on('stream', function(stream) {
+					call.on('open', function () {
+						call.on('stream', function(stream) {
 
-						// `stream` is the MediaStream of the remote peer.
-						// Here you'd add it to an HTML video/canvas element.
-						var video = document.createElement('video');
+							// `stream` is the MediaStream of the remote peer.
+							// Here you'd add it to an HTML video/canvas element.
+							var video = document.createElement('video');
 
-						document.body.appendChild(video);
-						video.srcObject = stream;
-						video.onloadedmetadata = function(e) {
-							video.play();
-						};
+							document.body.appendChild(video);
+							video.srcObject = stream;
+							video.onloadedmetadata = function(e) {
+								video.play();
+							};
+						});
 					});
 				});
 			}
