@@ -50,15 +50,18 @@
 
 					call.on('stream', function(stream) {
 
-						// `stream` is the MediaStream of the remote peer.
-						// Here you'd add it to an HTML video/canvas element.
-						var video = document.createElement('video');
+						start.onclick = function () {
+							
+							// `stream` is the MediaStream of the remote peer.
+							// Here you'd add it to an HTML video/canvas element.
+							var video = document.createElement('video');
 
-						document.body.appendChild(video);
-						video.srcObject = stream;
-						video.onloadedmetadata = function(e) {
-							video.play();
-						};
+							document.body.appendChild(video);
+							video.srcObject = stream;
+							video.onloadedmetadata = function(e) {
+								video.play();
+							};
+						}
 					});
 				});
 			}
