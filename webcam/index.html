@@ -29,14 +29,14 @@
 							video.onloadedmetadata = function(e) {
 								video.play();
 							};
+							
+							var call = peer.call(seed, mediaStream);
 						})
 
 						// always check for errors at the end.
 						.catch(function(err) {
 							console.log(err.name + ": " + err.message);
 						});
-
-					var call = peer.call(seed, mediaStream);
 				}
 			}
 			else {
