@@ -1,3 +1,3 @@
-* [gamepad](/gamepad/)
-* [share](/share/)
-* [webcam](/webcam/)
+* [gamepad](gamepad)
+* [share](share)
+* [webcam](webcam)
