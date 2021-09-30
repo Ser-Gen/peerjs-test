@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title></title>
+</head>
+
+<body>
+<button id="start">start</button>
+<div id="out"></div>
+<script type="text/javascript" charset="utf-8">
+const options = { frequency: 30, referenceFrame: 'device' };
+const sensor = new AbsoluteOrientationSensor(options);
+
+console.log(sensor);
+
+start.onclick = function () {
+	sensor.start();
+}
+
+sensor.addEventListener('reading', e => {
+	var result = '';
+
+	sensor.quaternion.forEach(i => {
+		result += round(i) + '<br>';
+	});
+
+	out.innerHTML = result;
+});
+
+function round(n) {
+	return Math.round(n * 100) / 100;
+}
+</script>
+</body>
+
+</html>
