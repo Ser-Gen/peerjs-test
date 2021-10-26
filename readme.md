@@ -1,4 +1,5 @@
 * [gamepad](gamepad)
 * [gyro](gyro)
+* [screen](screen)
 * [share](share)
 * [webcam](webcam)

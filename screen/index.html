@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>test-screen</title>
+</head>
+<body>
+	<div id="qrcode"></div>
+	<button id="start">start</button>
+	<script src="../peerjs.min.js"></script>
+	<script src="../qrcode.js"></script>
+	<script>
+		var peer = new Peer();
+		var seed = location.search.split('=')[1];
+        var displayMediaOptions = {
+            video: {
+                cursor: "always"
+            },
+            audio: false
+        };
+
+		peer.on('open', function(id) {
+			if (seed) {
+				start.onclick = function () {
+					var constraints = { audio: false, video: { facingMode: "user" } };
+
+					navigator.mediaDevices.getDisplayMedia(displayMediaOptions)
+						.then(function(mediaStream) {
+							var video = document.createElement('video');
+
+							document.body.appendChild(video);
+							video.srcObject = mediaStream;
+							video.onloadedmetadata = function(e) {
+								video.play();
+							};
+
+							var call = peer.call(seed, mediaStream);
+						})
+
+						// always check for errors at the end.
+						.catch(function(err) {
+							console.log(err.name + ": " + err.message);
+						});
+				}
+			}
+			else {
+				drawQR(id);
+
+				peer.on('call', function(call) {
+					document.getElementById("qrcode").hidden = true;
+
+					// Answer the call, providing our mediaStream
+					call.answer();
+
+					call.on('stream', function(stream) {
+
+						start.onclick = function () {
+							
+							// `stream` is the MediaStream of the remote peer.
+							// Here you'd add it to an HTML video/canvas element.
+							var video = document.createElement('video');
+
+							document.body.appendChild(video);
+							video.srcObject = stream;
+							video.onloadedmetadata = function(e) {
+								video.play();
+							};
+						}
+					});
+				});
+			}
+		});
+
+		function drawQR (id) {
+			var qrcode = new QRCode(document.getElementById("qrcode"), {
+				text: location.href +'?peer='+ id,
+				width: 256,
+				height: 256,
+				colorDark : "#000000",
+				colorLight : "#ffffff",
+				correctLevel : QRCode.CorrectLevel.H
+			});
+            document.getElementById("qrcode").insertAdjacentHTML('beforeend', location.href +'?peer='+ id);
+		}
+	</script>
+</body>
+</html>
