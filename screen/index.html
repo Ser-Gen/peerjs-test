@@ -82,7 +82,7 @@
 				colorLight : "#ffffff",
 				correctLevel : QRCode.CorrectLevel.H
 			});
-            document.getElementById("qrcode").insertAdjacentHTML('beforeend', location.href +'?peer='+ id);
+            document.getElementById("qrcode").insertAdjacentHTML('beforeend', `<a href="${location.href +'?peer='+ id}">Ссылка</a>`);
 		}
 	</script>
 </body>
