@@ -18,7 +18,12 @@
 		peer.on('open', function(id) {
 			if (seed) {
 				start.onclick = function () {
-					var constraints = { audio: false, video: { facingMode: "user" } };
+					var constraints = {
+						audio: true,
+						video: {
+							facingMode: "user"
+						},
+					};
 
 					navigator.mediaDevices.getUserMedia(constraints)
 						.then(function(mediaStream) {
