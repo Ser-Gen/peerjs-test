@@ -31,6 +31,7 @@
 							var video = document.createElement('video');
 
 							document.body.appendChild(video);
+							video.controls = true;
 							video.srcObject = mediaStream;
 							video.onloadedmetadata = function(e) {
 								video.play();
