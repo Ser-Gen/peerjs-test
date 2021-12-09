@@ -24,20 +24,10 @@
 		peer.on('open', function(id) {
 			if (seed) {
 				start.onclick = function () {
-					var constraints = { audio: false, video: { facingMode: "user" } };
-
 					navigator.mediaDevices.getDisplayMedia(displayMediaOptions)
 						.then(function(mediaStream) {
-							var video = document.createElement('video');
-
-							document.body.appendChild(video);
-							video.controls = true;
-							video.srcObject = mediaStream;
-							video.onloadedmetadata = function(e) {
-								video.play();
-							};
-
 							var call = peer.call(seed, mediaStream);
+							document.body.insertAdjacentHTML('beforeend', '<h1>Вы транслируете свой экран</h1>')
 						})
 
 						// always check for errors at the end.
@@ -65,6 +55,8 @@
 
 							document.body.appendChild(video);
 							video.srcObject = stream;
+							video.controls = true;
+							video.muted = true;
 							video.onloadedmetadata = function(e) {
 								video.play();
 							};
