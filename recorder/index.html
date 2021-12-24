@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Document</title>
+	<style>
+		body {
+			background-color: #333;
+		}
+		video {
+			width: 100%;
+			height: auto;
+		}
+	</style>
+</head>
+
+<body>
+	<div id="controls">
+		<button class="record-btn">начать</button>
+		<button class="stop-btn">остановить</button>
+	</div>
+	<script>
+		let btn = document.querySelector(".record-btn");
+		let stop = document.querySelector(".stop-btn");
+		let mediaRecorder;
+
+		stop.onclick = function () {
+			mediaRecorder.stop();
+		}
+
+		btn.addEventListener("click", async function () {
+			let stream = await navigator.mediaDevices.getDisplayMedia({
+				video: true,
+				audio: true,
+			});
+
+			//needed for better browser support
+			const mime = MediaRecorder.isTypeSupported("video/webm; codecs=vp9")
+				? "video/webm; codecs=vp9"
+				: "video/webm"
+			mediaRecorder = new MediaRecorder(stream, {
+				mimeType: mime
+			})
+
+			let chunks = []
+			mediaRecorder.addEventListener('dataavailable', function (e) {
+				chunks.push(e.data)
+			})
+
+			mediaRecorder.addEventListener('stop', function () {
+				let blob = new Blob(chunks, {
+					type: chunks[0].type
+				})
+				let url = URL.createObjectURL(blob)
+
+				let video = document.createElement("video")
+				video.src = url
+				video.controls = true
+				document.body.appendChild(video);
+
+				let a = document.createElement('a')
+				a.href = url
+				a.download = 'video.webm'
+				a.innerHTML = 'скачать'
+				controls.appendChild(a);
+			})
+
+			//we have to start the recorder manually
+			mediaRecorder.start()
+		})
+	</script>
+</body>
+
+</html>

@@ -3,3 +3,4 @@
 * [screen](screen)
 * [share](share)
 * [webcam](webcam)
+* [recorder](recorder)
