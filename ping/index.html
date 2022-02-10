@@ -10,7 +10,6 @@
 	<div id="qrcode"></div>
     <div id="output"></div>
 
-	<input type="file" name="" id="lol">
 	<script src="../peerjs.min.js"></script>
 	<script src="../qrcode.js"></script>
 	<script>
@@ -24,6 +23,7 @@
 				conn.on('open', function() {
                     setTimeout(function kek () {
                         conn.send(performance.now());
+                        kek();
                     }, 1000);
 
                     conn.on('data', function(data) {

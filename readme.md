@@ -4,3 +4,4 @@
 * [share](share)
 * [webcam](webcam)
 * [recorder](recorder)
+* [ping](ping)

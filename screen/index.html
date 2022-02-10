@@ -9,6 +9,7 @@
 <body>
 	<div id="qrcode"></div>
 	<button id="start">start</button>
+	<button id="answerCall">answer</button>
 	<script src="../peerjs.min.js"></script>
 	<script src="../qrcode.js"></script>
 	<script>
@@ -20,52 +21,68 @@
             },
             audio: true,
         };
+		var callSeed;
 
 		peer.on('open', function(id) {
 			if (seed) {
-				start.onclick = function () {
-					navigator.mediaDevices.getDisplayMedia(displayMediaOptions)
-						.then(function(mediaStream) {
-							var call = peer.call(seed, mediaStream);
-							document.body.insertAdjacentHTML('beforeend', '<h1>Вы транслируете свой экран</h1>')
-						})
+				var conn = peer.connect(seed);
 
-						// always check for errors at the end.
-						.catch(function(err) {
-							console.log(err.name + ": " + err.message);
-						});
-				}
+				callSeed = seed;
 			}
 			else {
 				drawQR(id);
 
-				peer.on('call', function(call) {
+				peer.on('connection', function(conn) {
 					document.getElementById("qrcode").hidden = true;
+					callSeed = conn.peer;
 
-					// Answer the call, providing our mediaStream
-					call.answer();
-
-					call.on('stream', function(stream) {
-
-						start.onclick = function () {
-							
-							// `stream` is the MediaStream of the remote peer.
-							// Here you'd add it to an HTML video/canvas element.
-							var video = document.createElement('video');
-
-							document.body.appendChild(video);
-							video.srcObject = stream;
-							video.controls = true;
-							video.muted = true;
-							video.width = 600;
-							video.height = 400;
-							video.onloadedmetadata = function(e) {
-								video.play();
-							};
-						}
+					conn.on('open', function() {
+						conn.on('data', function(data) {
+					        // conn.send(data);
+						});
 					});
 				});
 			}
+
+			start.onclick = function () {
+				navigator.mediaDevices.getDisplayMedia(displayMediaOptions)
+					.then(function(mediaStream) {
+						var call = peer.call(callSeed, mediaStream);
+						document.body.insertAdjacentHTML('beforeend', '<h1>Вы транслируете свой экран</h1>')
+					})
+
+					// always check for errors at the end.
+					.catch(function(err) {
+						console.log(err.name + ": " + err.message);
+					});
+			}
+
+			peer.on('call', function(call) {
+
+				// Answer the call, providing our mediaStream
+				call.answer();
+
+				call.on('stream', function(stream) {
+
+					start.hidden = true;
+					answerCall.onclick = function () {
+						
+						// `stream` is the MediaStream of the remote peer.
+						// Here you'd add it to an HTML video/canvas element.
+						var video = document.createElement('video');
+
+						document.body.appendChild(video);
+						video.srcObject = stream;
+						video.controls = true;
+						video.muted = true;
+						video.width = 600;
+						video.height = 400;
+						video.onloadedmetadata = function(e) {
+							video.play();
+						};
+					}
+				});
+			});
 		});
 
 		function drawQR (id) {
