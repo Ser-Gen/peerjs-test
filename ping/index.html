@@ -23,7 +23,7 @@
 				conn.on('open', function() {
                     setTimeout(function kek () {
                         conn.send(performance.now());
-                        kek();
+                        setTimeout(kek, 1000);
                     }, 1000);
 
                     conn.on('data', function(data) {
@@ -37,6 +37,8 @@ ${performance.now() - data}<br>
 				drawQR(id);
 
 				peer.on('connection', function(conn) {
+					document.getElementById("qrcode").hidden = true;
+
 					conn.on('open', function() {
 						conn.on('data', function(data) {
 					        conn.send(data);
