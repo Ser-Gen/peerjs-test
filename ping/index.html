@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Document</title>
+</head>
+<body>
+	<div id="qrcode"></div>
+    <div id="output"></div>
+
+	<input type="file" name="" id="lol">
+	<script src="../peerjs.min.js"></script>
+	<script src="../qrcode.js"></script>
+	<script>
+		var peer = new Peer();
+		var seed = location.search.split('=')[1];
+
+		peer.on('open', function(id) {
+			if (seed) {
+				var conn = peer.connect(seed);
+
+				conn.on('open', function() {
+                    setTimeout(function kek () {
+                        conn.send(performance.now());
+                    }, 1000);
+
+                    conn.on('data', function(data) {
+                        output.insertAdjacentHTML('beforeend', `
+${performance.now() - data}<br>
+                        `);
+                    });
+                });
+			}
+			else {
+				drawQR(id);
+
+				peer.on('connection', function(conn) {
+					conn.on('open', function() {
+						conn.on('data', function(data) {
+					        conn.send(data);
+						});
+					});
+				});
+			}
+		});
+
+		function drawQR (id) {
+			var qrcode = new QRCode(document.getElementById("qrcode"), {
+				text: location.href +'?peer='+ id,
+				width: 256,
+				height: 256,
+				colorDark : "#000000",
+				colorLight : "#ffffff",
+				correctLevel : QRCode.CorrectLevel.H
+			});
+            document.getElementById("qrcode").insertAdjacentHTML('beforeend', `<a href="${location.href +'?peer='+ id}">Ссылка</a>`);
+		}
+	</script>
+</body>
+</html>
