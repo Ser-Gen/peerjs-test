@@ -45,7 +45,7 @@ ${performance.now() - data}<br>
 						conn.on('data', function(data) {
 					        conn.send(data);
                         	output.insertAdjacentHTML('beforeend', `
-${lastData - data}<br>
+${data - lastData}<br>
                        		`);
 							lastData = data;
 						});
