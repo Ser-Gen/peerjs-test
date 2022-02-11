@@ -37,11 +37,17 @@ ${performance.now() - data}<br>
 				drawQR(id);
 
 				peer.on('connection', function(conn) {
+					var lastData = 0;
+
 					document.getElementById("qrcode").hidden = true;
 
 					conn.on('open', function() {
 						conn.on('data', function(data) {
 					        conn.send(data);
+                        	output.insertAdjacentHTML('beforeend', `
+${lastData - data}<br>
+                       		`);
+							lastData = data;
 						});
 					});
 				});
