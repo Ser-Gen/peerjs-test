@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+	<meta name="theme-color" content="#181c23" media="(prefers-color-scheme: dark)">
+	<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+	<title>PeerKit</title>
+	<link rel="stylesheet" href="app/ui/styles.css">
+</head>
+<body>
+	<div class="app">
+		<header class="topbar">
+			<div class="brand">PeerKit</div>
+			<div id="status" class="status" data-state="idle">
+				<span class="dot" aria-hidden="true"></span>
+				<span id="status-text">Starting…</span>
+				<span id="rtt" class="rtt" title="Round-trip time" hidden></span>
+			</div>
+			<button id="leave" class="btn ghost small" type="button">New session</button>
+		</header>
+
+		<div id="banner" class="banner" role="status" hidden>
+			<span id="banner-text"></span>
+			<button id="banner-action" class="btn small" type="button" hidden></button>
+		</div>
+
+		<main>
+			<section id="view-pair" class="view pair" hidden>
+				<h1>Pair a device</h1>
+				<p class="hint">Scan the code with the other device's camera, or send it the link.</p>
+				<div id="qr" class="qr" role="img" aria-label="QR code with the session link"></div>
+				<input id="link" class="link" type="text" readonly aria-label="Session link">
+				<div class="actions">
+					<button id="copy-link" class="btn primary" type="button">Copy link</button>
+					<button id="share-link" class="btn" type="button" hidden>Share…</button>
+				</div>
+				<button id="back-to-session" class="btn ghost" type="button" hidden>Back to session</button>
+				<details class="legacy">
+					<summary>Old demos</summary>
+					<p>
+						<a href="demos/ping/">ping</a> ·
+						<a href="demos/share/">share</a> ·
+						<a href="demos/screen/">screen</a> ·
+						<a href="demos/webcam/">webcam</a> ·
+						<a href="demos/recorder/">recorder</a> ·
+						<a href="demos/gyro/">gyro</a> ·
+						<a href="demos/gamepad/">gamepad</a>
+					</p>
+				</details>
+			</section>
+
+			<section id="view-message" class="view message" hidden>
+				<div id="msg-spinner" class="spinner" aria-hidden="true"></div>
+				<h1 id="msg-title"></h1>
+				<p id="msg-text" class="hint"></p>
+				<div id="msg-actions" class="actions"></div>
+			</section>
+
+			<section id="view-session" class="view session" hidden>
+				<div id="tool-host" class="tool-host"></div>
+			</section>
+		</main>
+
+		<nav id="tabs" class="tabs" hidden></nav>
+	</div>
+
+	<div id="toasts" class="toasts" aria-live="polite"></div>
+
+	<noscript>PeerKit needs JavaScript.</noscript>
+	<script src="vendor/peerjs.min.js"></script>
+	<script src="vendor/qrcode.js"></script>
+	<script type="module" src="app/main.js"></script>
+</body>
+</html>
