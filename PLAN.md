@@ -92,16 +92,16 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - Human-readable errors: map peerjs `error.type` to plain messages, e.g. "Server unreachable" or "Peer not found — the code may be stale".
 
 **Checklist**
-- [ ] Opening the site root shows the new app; `/demos/ping/` etc. still work.
-- [ ] Laptop shows QR; scanning it with an Android phone opens the app and both show "Connected".
-- [ ] Copy link and Share (on phone) work; pasting the link in another browser connects.
-- [ ] RTT in the status bar updates on both sides.
-- [ ] Text sent phone → laptop and laptop → phone appears; links are clickable; copy button works.
-- [ ] Send a photo from phone to laptop; progress shows; the file downloads and opens.
+- [x] Opening the site root shows the new app; `/demos/ping/` etc. still work.
+- [x] Laptop shows QR; scanning it with an Android phone opens the app and both show "Connected".
+- [x] Copy link and Share (on phone) work; pasting the link in another browser connects.
+- [x] RTT in the status bar updates on both sides.
+- [x] Text sent phone → laptop and laptop → phone appears; links are clickable; copy button works.
+- [x] Send a photo from phone to laptop; progress shows; the file downloads and opens.
 - [ ] Send a ~500 MB video laptop → phone; progress is smooth, the page stays responsive, and the phone screen doesn't sleep.
 - [ ] Cancel mid-transfer on either side stops both sides cleanly.
-- [ ] A third device opening the same link is refused with a clear message.
-- [ ] Layout is usable one-handed on the phone in portrait with no horizontal scroll.
+- [x] A third device opening the same link is refused with a clear message.
+- [x] Layout is usable one-handed on the phone in portrait with no horizontal scroll.
 
 ### Slice 2 — Server profiles and config handoff
 
@@ -120,6 +120,15 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
   - If the profile isn't saved yet (compare by host+port+path+key), shows a banner: "This session uses server *X* — Save profile".
 - Import/export all profiles as JSON (copy/paste) so you can back them up or move them to a new device without pairing.
 
+**As built** (`app/settings.js`, `app/ui/settings-view.js`)
+- Settings opens from the gear in the top bar. It is a history entry, so the Android back gesture closes it. Editors are modal `<dialog>`s.
+- The Host field accepts a pasted URL (`https://peer.example.com:9000/app`) and splits it into host, port, path and secure.
+- A profile can't duplicate a saved server (same host+port+path+key). "Duplicate" is for making a variant with another path or key.
+- A new profile is made active by default ("Use for new sessions").
+- Changing the active server before anyone has connected restarts the host on the new server with a fresh QR. After a connection it applies to the next session.
+- Import also accepts a PeerKit link that carries `s=`.
+- A warning appears when an insecure (`http`) server would be blocked on the HTTPS page.
+
 **Tricky points**
 - Profiles and links can be malformed. Validate them and fall back to a clear error instead of a blank page.
 - Keep the link short enough for a readable QR. Leave out fields that match peerjs defaults. If the QR gets dense, switch to error-correction level M.
@@ -132,6 +141,8 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - [ ] With the default profile active, the link has no `s=` parameter.
 - [ ] Export profiles on laptop, import on phone — list matches.
 - [ ] Editing a garbage link fragment by hand shows an error, not a broken page.
+- [ ] On the laptop before pairing, switch the active server in Settings: back on the QR screen the server name and QR have changed.
+- [ ] Android back gesture closes Settings (and an open editor dialog) instead of leaving the app.
 
 ### Slice 3 — Stable identity, room codes and reconnect
 

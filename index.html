@@ -17,6 +17,7 @@
 				<span id="status-text">Starting…</span>
 				<span id="rtt" class="rtt" title="Round-trip time" hidden></span>
 			</div>
+			<button id="open-settings" class="icon-btn" type="button" aria-label="Settings" aria-pressed="false"></button>
 			<button id="leave" class="btn ghost small" type="button">New session</button>
 		</header>
 
@@ -25,11 +26,18 @@
 			<button id="banner-action" class="btn small" type="button" hidden></button>
 		</div>
 
+		<div id="notice" class="notice" role="status" hidden>
+			<span id="notice-text"></span>
+			<button id="notice-save" class="btn small primary" type="button">Save server</button>
+			<button id="notice-dismiss" class="icon-btn small" type="button" aria-label="Dismiss"></button>
+		</div>
+
 		<main>
 			<section id="view-pair" class="view pair" hidden>
 				<h1>Pair a device</h1>
 				<p class="hint">Scan the code with the other device's camera, or send it the link.</p>
 				<div id="qr" class="qr" role="img" aria-label="QR code with the session link"></div>
+				<p id="pair-server" class="server-line"></p>
 				<input id="link" class="link" type="text" readonly aria-label="Session link">
 				<div class="actions">
 					<button id="copy-link" class="btn primary" type="button">Copy link</button>
@@ -54,12 +62,15 @@
 				<div id="msg-spinner" class="spinner" aria-hidden="true"></div>
 				<h1 id="msg-title"></h1>
 				<p id="msg-text" class="hint"></p>
+				<p id="msg-server" class="server-line" hidden></p>
 				<div id="msg-actions" class="actions"></div>
 			</section>
 
 			<section id="view-session" class="view session" hidden>
 				<div id="tool-host" class="tool-host"></div>
 			</section>
+
+			<section id="view-settings" class="view settings" hidden></section>
 		</main>
 
 		<nav id="tabs" class="tabs" hidden></nav>

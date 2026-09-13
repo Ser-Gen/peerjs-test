@@ -20,8 +20,9 @@ const ERRORS = {
 	'browser-incompatible': ['Browser not supported', 'This browser does not support WebRTC.'],
 	'invalid-id': ['Invalid link', 'The session code in this link is not valid.'],
 	'invalid-key': ['Server rejected the key', 'The signaling server did not accept the API key.'],
-	network: ['Server unreachable', 'Could not reach the signaling server. Check the internet connection.'],
-	'server-error': ['Server error', 'The signaling server returned an error. Try again in a moment.'],
+	network: ['Server unreachable', 'Could not reach the signaling server. Check the internet connection and the server settings.'],
+	'server-error': ['Server error', 'The signaling server did not respond as expected. Check the server settings or try again in a moment.'],
+	'bad-link': ['Invalid link', 'The server settings in this link are damaged. Ask for a new link or scan the QR code again.'],
 	'socket-error': ['Server connection failed', 'The connection to the signaling server failed.'],
 	'socket-closed': ['Server connection closed', 'The signaling server closed the connection.'],
 	disconnected: ['Server connection lost', 'Lost the connection to the signaling server.'],
@@ -51,7 +52,7 @@ export function describeError(code) {
 export class Session extends Emitter {
 	constructor({ joinId = null, peerOptions = {} } = {}) {
 		super();
-		this.role = joinId ? 'guest' : 'host';
+		this.role = joinId != null ? 'guest' : 'host';
 		this.hostId = joinId;
 		this.peerOptions = peerOptions;
 		this.state = 'idle';
@@ -83,6 +84,11 @@ export class Session extends Emitter {
 		}
 		this.peer?.destroy();
 		this._createPeer();
+	}
+
+	/** Fail without starting, e.g. for a link that can't be used. */
+	fail(code) {
+		this._fail(code);
 	}
 
 	destroy() {

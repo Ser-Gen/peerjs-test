@@ -73,19 +73,33 @@ h1 {
 
 /* --- layout --- */
 
+/* Flex, not grid: hidden bars (banner, notice, tabs) must not shift main into an auto-sized row. */
 .app {
 	height: 100vh;
 	height: 100dvh;
-	display: grid;
-	grid-template-rows: auto auto minmax(0, 1fr) auto;
+	display: flex;
+	flex-direction: column;
+}
+
+.app > :not(main) {
+	flex: none;
 }
 
 main {
+	flex: 1;
 	min-height: 0;
+	display: flex;
+	flex-direction: column;
 }
 
 .view {
-	height: 100%;
+	flex: 1;
+	min-height: 0;
+}
+
+h2 {
+	margin: 0;
+	font-size: 1rem;
 }
 
 .topbar {
@@ -173,6 +187,32 @@ main {
 
 .banner span {
 	flex: 1;
+}
+
+.notice {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.35rem max(0.5rem, env(safe-area-inset-right)) 0.35rem max(1rem, env(safe-area-inset-left));
+	background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+	border-bottom: 1px solid var(--border);
+	font-size: 0.875rem;
+}
+
+.notice span {
+	flex: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.topbar .icon-btn {
+	width: 40px;
+	height: 40px;
+	margin-right: -0.5rem;
+}
+
+.topbar .icon-btn[aria-pressed="true"] {
+	color: var(--accent);
 }
 
 /* --- controls --- */
@@ -271,6 +311,28 @@ main {
 	gap: 0.5rem;
 }
 
+.actions.start {
+	justify-content: flex-start;
+}
+
+.actions.end {
+	justify-content: flex-end;
+}
+
+.actions .push {
+	margin-right: auto;
+}
+
+.link-btn {
+	padding: 0.4rem 0.2rem;
+	border: 0;
+	background: none;
+	color: var(--accent);
+	font: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+}
+
 .spinner {
 	width: 2.5rem;
 	height: 2.5rem;
@@ -330,6 +392,18 @@ main {
 	color: var(--text);
 	font: 0.8rem ui-monospace, SFMono-Regular, Menlo, monospace;
 	text-overflow: ellipsis;
+}
+
+.server-line {
+	margin: 0;
+	color: var(--muted);
+	font-size: 0.85rem;
+	overflow-wrap: anywhere;
+}
+
+.server-line strong {
+	color: var(--text);
+	font-weight: 600;
 }
 
 .legacy {
@@ -599,6 +673,242 @@ progress::-moz-progress-bar {
 	resize: none;
 }
 
+/* --- settings --- */
+
+.settings {
+	overflow-y: auto;
+	padding: 0 max(1rem, env(safe-area-inset-right)) calc(1.5rem + env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+}
+
+.settings-inner {
+	max-width: 40rem;
+	margin: 0 auto;
+}
+
+.settings-head {
+	display: flex;
+	align-items: center;
+	gap: 0.25rem;
+	margin: 0.5rem 0 0 -0.6rem;
+}
+
+.settings-section {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+	padding: 1rem 0;
+	border-bottom: 1px solid var(--border);
+}
+
+.settings-section:last-child {
+	border-bottom: 0;
+}
+
+.settings-section > .btn {
+	align-self: flex-start;
+}
+
+.profiles {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.profile {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding: 0.75rem;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: var(--surface);
+}
+
+.profile[data-active] {
+	border-color: var(--accent);
+	box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.profile-main {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.75rem;
+	cursor: pointer;
+}
+
+.profile-main input {
+	flex: none;
+	width: 1.25rem;
+	height: 1.25rem;
+	margin: 0.1rem 0 0;
+	accent-color: var(--accent);
+}
+
+.profile-text {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.1rem;
+}
+
+.profile-name {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.4rem;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+.profile-addr {
+	color: var(--muted);
+	font: 0.8rem ui-monospace, SFMono-Regular, Menlo, monospace;
+	overflow-wrap: anywhere;
+}
+
+.badge {
+	padding: 0 0.45rem;
+	border-radius: 999px;
+	background: var(--surface-2);
+	color: var(--muted);
+	font-size: 0.7rem;
+	font-weight: 500;
+}
+
+.profile-actions,
+.profile .test-result {
+	padding-left: 2rem;
+}
+
+.profile-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+}
+
+.test-result {
+	margin: 0;
+	font-size: 0.85rem;
+}
+
+.test-result[data-kind="busy"] {
+	color: var(--muted);
+}
+
+.test-result[data-kind="ok"] {
+	color: var(--ok);
+}
+
+.test-result[data-kind="bad"] {
+	color: var(--bad);
+}
+
+/* --- dialogs & forms --- */
+
+.sheet {
+	width: min(calc(100% - 2rem), 28rem);
+	max-height: calc(100% - 2rem);
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: 16px;
+	background: var(--surface);
+	color: var(--text);
+	box-shadow: 0 10px 40px rgb(0 0 0 / 0.3);
+}
+
+.sheet::backdrop {
+	background: rgb(0 0 0 / 0.45);
+}
+
+.sheet-body {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+	padding: 1.25rem;
+}
+
+.field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	min-width: 0;
+	color: var(--muted);
+	font-size: 0.85rem;
+}
+
+.field > span {
+	font-weight: 500;
+}
+
+.field-row {
+	display: grid;
+	grid-template-columns: 7rem minmax(0, 1fr);
+	gap: 0.75rem;
+}
+
+.input {
+	width: 100%;
+	min-height: 44px;
+	padding: 0.5rem 0.75rem;
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	background: var(--bg);
+	color: var(--text);
+	font: inherit;
+	font-size: 16px; /* below 16px mobile browsers zoom on focus */
+}
+
+.input:focus {
+	outline: 2px solid var(--accent);
+	outline-offset: -1px;
+}
+
+textarea.input {
+	resize: vertical;
+}
+
+.input.code {
+	font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@media (pointer: coarse) {
+	.input.code {
+		font-size: 16px;
+	}
+}
+
+.check {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+	min-height: 44px;
+	cursor: pointer;
+}
+
+.check input {
+	width: 1.2rem;
+	height: 1.2rem;
+	margin: 0;
+	accent-color: var(--accent);
+}
+
+.form-error,
+.warn-text {
+	margin: 0;
+	font-size: 0.85rem;
+}
+
+.form-error {
+	color: var(--bad);
+}
+
+.warn-text {
+	color: var(--warn);
+}
+
 /* --- toasts --- */
 
 .toasts {
@@ -606,6 +916,8 @@ progress::-moz-progress-bar {
 	left: 50%;
 	bottom: calc(5rem + env(safe-area-inset-bottom));
 	z-index: 10;
+	width: max-content;
+	max-width: calc(100vw - 2rem);
 	display: flex;
 	flex-direction: column;
 	align-items: center;
@@ -616,11 +928,11 @@ progress::-moz-progress-bar {
 
 .toast {
 	padding: 0.5rem 1rem;
-	border-radius: 999px;
+	border-radius: 18px;
 	background: var(--text);
 	color: var(--bg);
 	font-size: 0.875rem;
-	white-space: nowrap;
+	text-align: center;
 	animation: fade-in 0.15s ease-out;
 }
 
