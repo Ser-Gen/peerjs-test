@@ -134,15 +134,15 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - Keep the link short enough for a readable QR. Leave out fields that match peerjs defaults. If the QR gets dense, switch to error-correction level M.
 
 **Checklist**
-- [ ] Add a profile for your own peerjs-server; "Test connection" reports success. A wrong port reports a readable failure.
-- [ ] With that profile active, laptop QR shows the server name; phone (with only the default profile) scans it and connects.
-- [ ] Phone shows the "Save profile" banner; after saving, it appears in the phone's profile list.
-- [ ] Re-scanning the same QR no longer shows the banner.
-- [ ] With the default profile active, the link has no `s=` parameter.
-- [ ] Export profiles on laptop, import on phone — list matches.
-- [ ] Editing a garbage link fragment by hand shows an error, not a broken page.
-- [ ] On the laptop before pairing, switch the active server in Settings: back on the QR screen the server name and QR have changed.
-- [ ] Android back gesture closes Settings (and an open editor dialog) instead of leaving the app.
+- [x] Add a profile for your own peerjs-server; "Test connection" reports success. A wrong port reports a readable failure.
+- [x] With that profile active, laptop QR shows the server name; phone (with only the default profile) scans it and connects.
+- [x] Phone shows the "Save profile" banner; after saving, it appears in the phone's profile list.
+- [x] Re-scanning the same QR no longer shows the banner.
+- [x] With the default profile active, the link has no `s=` parameter.
+- [x] Export profiles on laptop, import on phone — list matches.
+- [x] Editing a garbage link fragment by hand shows an error, not a broken page.
+- [x] On the laptop before pairing, switch the active server in Settings: back on the QR screen the server name and QR have changed.
+- [x] Android back gesture closes Settings (and an open editor dialog) instead of leaving the app.
 
 ### Slice 3 — Stable identity, room codes and reconnect
 
