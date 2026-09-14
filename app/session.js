@@ -1,12 +1,18 @@
 /* global Peer */
+import { cleanName, device } from './device.js';
 import { Emitter } from './emitter.js';
-import { CH, LABEL, PROTOCOL_VERSION } from './protocol.js';
-import { deviceId, deviceName } from './util.js';
+import { CH, LABEL, PROTOCOL_VERSION, TOKEN_RE } from './protocol.js';
+import { sleep } from './util.js';
 
 const PING_INTERVAL = 2000;
 const LOST_AFTER = 15000;
+const HEALTH_TIMEOUT = 4000; // after the page wakes up, a ping must be answered this fast
 const CONNECT_TIMEOUT = 20000;
-const BROKER_RETRY = 3000;
+const APPROVAL_TIMEOUT = 60000;
+const RETRY_MIN = 1000; // backoff: 1, 2, 4… s
+const RETRY_MAX = 15000;
+const ID_RETRY = 3000;
+const BYE_GRACE = 300; // lets 'bye' leave before the connection closes
 
 // Backpressure for the binary channel: pause above HIGH, resume below LOW.
 const HIGH_WATER = 2 * 1024 * 1024;
@@ -15,10 +21,11 @@ const DEFAULT_MESSAGE_SIZE = 64 * 1024;
 
 // Losing the signaling server doesn't break an established P2P link.
 const SIGNALING_ERRORS = new Set(['disconnected', 'network', 'server-error', 'socket-error', 'socket-closed']);
+const REJECTIONS = new Set(['busy', 'version', 'denied', 'no-answer', 'ended']);
 
 const ERRORS = {
 	'browser-incompatible': ['Browser not supported', 'This browser does not support WebRTC.'],
-	'invalid-id': ['Invalid link', 'The session code in this link is not valid.'],
+	'invalid-id': ['Invalid link', 'The room code in this link is not valid.'],
 	'invalid-key': ['Server rejected the key', 'The signaling server did not accept the API key.'],
 	network: ['Server unreachable', 'Could not reach the signaling server. Check the internet connection and the server settings.'],
 	'server-error': ['Server error', 'The signaling server did not respond as expected. Check the server settings or try again in a moment.'],
@@ -28,12 +35,17 @@ const ERRORS = {
 	disconnected: ['Server connection lost', 'Lost the connection to the signaling server.'],
 	'ssl-unavailable': ['HTTPS not available', 'The signaling server does not support secure connections.'],
 	'unavailable-id': ['ID already in use', 'This session ID is taken. Try again.'],
-	'peer-unavailable': ['Host not found', 'The link may be stale, or the host page was closed or reloaded.'],
+	'peer-unavailable': ['Host not found', 'Check the room code. The host page may be closed, or the host uses a different server.'],
 	webrtc: ['Direct connection failed', 'The devices could not open a direct connection.'],
 	timeout: ['Connection timed out', 'The devices could not reach each other. A strict network (NAT or firewall) may be blocking direct connections.'],
 	lost: ['Connection lost', 'The other device stopped responding.'],
 	busy: ['Host is busy', 'This host is already connected to another device.'],
 	version: ['Version mismatch', 'The devices run different app versions. Reload both pages.'],
+	denied: ['Not allowed', 'The host did not let this device join.'],
+	'no-answer': ['No answer', 'Nobody confirmed this device on the host screen.'],
+	ended: ['Session ended', 'The host ended the session.'],
+	'other-tab': ['Open in another tab', 'PeerKit is already running this session in another tab or window.'],
+	'moved-tab': ['Moved to another tab', 'This session was opened in another tab or window.'],
 };
 
 export function describeError(code) {
@@ -42,25 +54,32 @@ export function describeError(code) {
 }
 
 /**
- * One 1-to-1 session between a host (shows the QR) and a guest (opened the link).
+ * One 1-to-1 session between a host (stable ID `peerId`, shows the code) and a guest (joins it).
  *
- * States: idle → starting → waiting (host) | connecting (guest) → connected;
- * failed carries an error code. A host whose guest leaves goes back to waiting.
+ * States: idle → starting → waiting (host) | connecting → [pending] (guest) → connected.
+ * A host whose guest leaves goes back to waiting. A guest that was connected goes to
+ * reconnecting and retries with backoff. failed carries an error code.
  *
- * Events: 'state' (state, error), 'rtt' (ms), 'binary' (ArrayBuffer), `msg:<ch>` (message).
+ * Events: 'state' (state, error), 'rtt' (ms), 'binary' (ArrayBuffer), `msg:<ch>` (message),
+ * 'paired' (remote) on every link up, 'left' when the guest said bye (host),
+ * 'approval' / 'approval-end' (request: {name, allow(), deny()}) for a device that needs the host's OK.
  */
 export class Session extends Emitter {
-	constructor({ joinId = null, peerOptions = {} } = {}) {
+	constructor({ role, peerId = null, token = null, peerOptions = {}, isTrusted = () => false }) {
 		super();
-		this.role = joinId != null ? 'guest' : 'host';
-		this.hostId = joinId;
+		this.role = role;
+		this.hostId = peerId; // host: our own stable ID; guest: the host's
+		this.token = token; // host: expected from guests; guest: sent to the host
 		this.peerOptions = peerOptions;
+		this.isTrusted = isTrusted;
 		this.state = 'idle';
 		this.error = null;
 		this.id = null;
 		this.remote = null; // { peerId, name, deviceId }
 		this.rtt = null;
 		this.everConnected = false;
+		this.idTakenSince = null; // host: since when the server refuses our ID
+		this.retryError = null; // guest: why the link dropped or the last attempt failed
 		this.peer = null;
 		this.ctl = null;
 		this.file = null;
@@ -68,6 +87,14 @@ export class Session extends Emitter {
 		this._timer = null;
 		this._pingTimer = null;
 		this._brokerTimer = null;
+		this._brokerAttempts = 0;
+		this._retryTimer = null;
+		this._retryOnOpen = false;
+		this._linkAttempts = 0;
+		this._opened = false; // registered with the server at least once
+		this._auto = false; // the current attempt is an automatic reconnect
+		this._pending = null; // host: the approval request being shown
+		this._ended = null; // host: device ID we disconnected on purpose
 		this._lastSeen = 0;
 		this._destroyed = false;
 	}
@@ -76,13 +103,18 @@ export class Session extends Emitter {
 		this._createPeer();
 	}
 
+	/** Start over after a failure, or reconnect now instead of waiting for the backoff. */
 	retry() {
-		this._teardownLink();
-		if (this.role === 'guest' && this.peer?.open && !this.peer.destroyed) {
+		this._auto = false;
+		this._linkAttempts = 0;
+		this._clearRetry();
+		if (this.role === 'guest' && this.peer?.open) {
 			this._connectToHost();
 			return;
 		}
-		this.peer?.destroy();
+		this._clearBroker();
+		this._teardownLink();
+		this._dropPeer();
 		this._createPeer();
 	}
 
@@ -91,11 +123,53 @@ export class Session extends Emitter {
 		this._fail(code);
 	}
 
+	/** Release the peer ID and stay failed until `retry()`, e.g. when another tab took over. */
+	stop(code) {
+		this._halt();
+		this._setState('failed', code);
+	}
+
 	destroy() {
 		this._destroyed = true;
-		this._teardownLink();
-		clearTimeout(this._brokerTimer);
-		this.peer?.destroy();
+		this._halt();
+	}
+
+	/** End the session on purpose. A host refuses the guest's automatic reconnects afterwards. */
+	async leave() {
+		if (this.state !== 'connected') return;
+		const { ctl, remote } = this;
+		// Before 'bye': the guest closes the link as soon as it reads it.
+		if (this.role === 'host') this._ended = remote?.deviceId ?? null;
+		this.send(CH.SYS, { type: 'bye' });
+		await sleep(BYE_GRACE);
+		if (this.role === 'host' && this.ctl === ctl) this._linkLost();
+	}
+
+	/** Call when the page becomes visible or the network returns: check now instead of waiting for timers. */
+	checkHealth() {
+		if (this._destroyed) return;
+		if (this.state === 'failed') {
+			if (SIGNALING_ERRORS.has(this.error)) this.retry();
+			return;
+		}
+		const peer = this.peer;
+		if (this._opened && peer && !peer.destroyed && peer.disconnected) {
+			this._clearBroker();
+			this._brokerAttempts = 0;
+			this._reviveSignaling();
+		}
+		if (this.state === 'reconnecting' && this._retryTimer) {
+			this._linkAttempts = 0;
+			this._attemptReconnect();
+		}
+		if (this.state === 'connected') {
+			const gen = this._gen;
+			const asked = Date.now();
+			this.send(CH.SYS, { type: 'ping', t: performance.now() });
+			setTimeout(() => {
+				if (gen === this._gen && this._lastSeen < asked) this._linkLost('lost');
+			}, HEALTH_TIMEOUT);
+		}
 	}
 
 	onMessage(ch, fn) {
@@ -141,69 +215,158 @@ export class Session extends Emitter {
 			this._fail('browser-incompatible');
 			return;
 		}
-		const peer = (this.peer = new Peer({ debug: 1, ...this.peerOptions }));
+		const options = { debug: 1, ...this.peerOptions };
+		const peer = (this.peer = this.role === 'host' ? new Peer(this.hostId, options) : new Peer(options));
 
 		peer.on('open', id => {
-			if (peer !== this.peer || this.state !== 'starting') return; // reconnects to the broker re-emit 'open'
-			this.id = id;
-			if (this.role === 'host') this._setState('waiting');
-			else this._connectToHost();
+			if (peer === this.peer) this._onOpen(id);
 		});
 		peer.on('connection', conn => {
 			if (peer === this.peer && this.role === 'host') this._onIncoming(conn);
 			else conn.close();
 		});
 		peer.on('disconnected', () => {
-			if (peer === this.peer && !this._destroyed) this._reconnectBroker();
+			if (peer === this.peer && this._opened && this.state !== 'failed') this._recoverSignaling();
 		});
 		peer.on('error', err => {
 			if (peer === this.peer && !this._destroyed) this._onPeerError(err);
 		});
 	}
 
+	_onOpen(id) {
+		// Also fires again after every successful reconnect to the server.
+		this._opened = true;
+		this._brokerAttempts = 0;
+		this.id = id;
+		const idWasTaken = this.idTakenSince != null;
+		this.idTakenSince = null;
+		if (this.state === 'starting') {
+			if (this.role === 'host') this._setState('waiting');
+			else this._connectToHost();
+		} else if (this.state === 'reconnecting' && this._retryOnOpen) {
+			this._connectToHost();
+		} else if (idWasTaken) {
+			this._changed();
+		}
+	}
+
 	_onPeerError(err) {
 		const type = err?.type ?? 'unknown';
 		console.warn('[peerkit] peer error:', type, err);
 		if (this.state === 'failed') return; // keep the first, more meaningful error
-		// A single broken incoming attempt must not take down the host (and invalidate its QR).
-		if (this.role === 'host' && (type === 'webrtc' || type === 'peer-unavailable')) return;
-		if (this.state === 'connected' && type === 'webrtc') return;
-		// Once registered, keep the same ID and reconnect to the broker instead of failing.
-		if (this.id && SIGNALING_ERRORS.has(type) && (this.state === 'connected' || this.state === 'waiting' || this.state === 'starting')) {
+		if (type === 'peer-unavailable' || type === 'webrtc') {
+			// One broken attempt must not take down a host (and its code) or a working link.
+			if (this.role === 'guest' && (this.state === 'connecting' || this.state === 'pending')) this._linkLost(type);
+			return;
+		}
+		if (type === 'unavailable-id' && this.role === 'host') {
+			// Usually our own ID from before a reload that the server hasn't released yet.
+			this.idTakenSince ??= Date.now();
 			if (this.state === 'waiting') this._setState('starting');
-			this._reconnectBroker();
+			this._recoverSignaling(ID_RETRY);
+			this._changed();
+			return;
+		}
+		if (this._opened && SIGNALING_ERRORS.has(type)) {
+			if (this.state === 'waiting') this._setState('starting');
+			this._recoverSignaling();
 			return;
 		}
 		this._fail(type);
 	}
 
-	_reconnectBroker() {
-		if (this._brokerTimer) return;
+	_recoverSignaling(delay = null) {
+		if (this._brokerTimer || this._destroyed) return;
+		const wait = delay ?? Math.min(RETRY_MAX, RETRY_MIN * 2 ** this._brokerAttempts++);
 		this._brokerTimer = setTimeout(() => {
 			this._brokerTimer = null;
-			const peer = this.peer;
-			if (peer && !peer.destroyed && peer.disconnected) peer.reconnect();
-		}, BROKER_RETRY);
+			if (!this._destroyed && this.state !== 'failed') this._reviveSignaling();
+		}, wait);
+	}
+
+	_reviveSignaling() {
+		const peer = this.peer;
+		// peerjs destroys a peer whose first registration failed and only disconnects one that had an ID.
+		if (!peer || peer.destroyed) this._createPeer();
+		else if (peer.disconnected) peer.reconnect();
+	}
+
+	_clearBroker() {
+		clearTimeout(this._brokerTimer);
+		this._brokerTimer = null;
+	}
+
+	_dropPeer() {
+		const peer = this.peer;
+		this.peer = null; // first, so its close events are ignored
+		this.id = null;
+		try {
+			peer?.destroy();
+		} catch {
+			// already gone
+		}
 	}
 
 	// --- guest side ---
 
 	_connectToHost() {
 		this._teardownLink();
+		this._clearRetry();
 		const gen = this._gen;
 		this._setState('connecting');
 		const ctl = this.peer.connect(this.hostId, { label: LABEL.CTL, serialization: 'json', reliable: true });
+		if (gen !== this._gen) return;
 		if (!ctl) {
-			this._fail('disconnected');
+			this._linkLost('disconnected');
 			return;
 		}
 		this._attachCtl(ctl);
 		ctl.on('open', () => {
-			if (gen === this._gen) this.send(CH.SYS, { type: 'hello', ...identity() });
+			if (gen === this._gen) this.send(CH.SYS, { type: 'hello', ...identity(), token: this.token, auto: this._auto });
 		});
 		this._timer = setTimeout(() => {
-			if (gen === this._gen) this._fail('timeout');
+			if (gen === this._gen) this._linkLost('timeout');
 		}, CONNECT_TIMEOUT);
+	}
+
+	_scheduleReconnect(error) {
+		const delay = Math.min(RETRY_MAX, RETRY_MIN * 2 ** this._linkAttempts++);
+		this.retryError = error;
+		this._clearRetry();
+		this._setState('reconnecting');
+		this._retryTimer = setTimeout(() => {
+			this._retryTimer = null;
+			this._attemptReconnect();
+		}, delay);
+	}
+
+	_attemptReconnect() {
+		this._clearRetry();
+		this._auto = true;
+		if (this.peer?.open) {
+			this._connectToHost();
+			return;
+		}
+		// Signaling is down too: connect as soon as the peer is registered again.
+		this._retryOnOpen = true;
+		this._setState('reconnecting');
+		if (!this._brokerTimer) this._reviveSignaling();
+	}
+
+	_clearRetry() {
+		clearTimeout(this._retryTimer);
+		this._retryTimer = null;
+		this._retryOnOpen = false;
+	}
+
+	_onPending() {
+		if (this.role !== 'guest' || this.state !== 'connecting') return;
+		const gen = this._gen;
+		clearTimeout(this._timer);
+		this._setState('pending');
+		this._timer = setTimeout(() => {
+			if (gen === this._gen) this._fail('no-answer');
+		}, APPROVAL_TIMEOUT + CONNECT_TIMEOUT);
 	}
 
 	_onWelcome(msg) {
@@ -212,10 +375,17 @@ export class Session extends Emitter {
 			this._fail('version');
 			return;
 		}
-		this.remote = { peerId: this.ctl.peer, name: cleanName(msg.name), deviceId: msg.deviceId };
+		if (typeof msg.token === 'string' && TOKEN_RE.test(msg.token)) this.token = msg.token;
+		this.remote = { peerId: this.ctl.peer, name: cleanName(msg.name) || 'Device', deviceId: cleanId(msg.deviceId) };
+		const gen = this._gen;
+		if (this.state === 'pending') this._setState('connecting');
+		clearTimeout(this._timer);
+		this._timer = setTimeout(() => {
+			if (gen === this._gen) this._linkLost('timeout');
+		}, CONNECT_TIMEOUT);
 		const file = this.peer.connect(this.hostId, { label: LABEL.FILE, serialization: 'raw', reliable: true });
 		if (file) this._attachFile(file);
-		else this._fail('disconnected');
+		else this._linkLost('disconnected');
 	}
 
 	// --- host side ---
@@ -244,20 +414,52 @@ export class Session extends Emitter {
 	}
 
 	_onHello(conn, msg) {
-		const reject = reason => {
-			conn.send({ ch: CH.SYS, type: 'reject', reason });
-			setTimeout(() => conn.close(), 1000);
-		};
-		if (msg.v !== PROTOCOL_VERSION) return reject('version');
-		// Only the same tab (e.g. after a reload) may replace the current guest.
-		if (this.ctl && this.remote?.deviceId !== msg.deviceId) return reject('busy');
+		if (msg.v !== PROTOCOL_VERSION) return rejectConn(conn, 'version');
+		const remote = { peerId: conn.peer, name: cleanName(msg.name) || 'Device', deviceId: cleanId(msg.deviceId) };
+		const current = remote.deviceId != null && remote.deviceId === this.remote?.deviceId;
+		// Only the same device (e.g. after a reload) may replace the current guest.
+		if (this.ctl && !current) return rejectConn(conn, 'busy');
+		if (remote.deviceId != null && remote.deviceId === this._ended) {
+			// Disconnected on purpose: refuse its automatic reconnects, but not a deliberate join.
+			if (msg.auto) return rejectConn(conn, 'ended');
+			this._ended = null;
+		}
+		const trusted = current || (this.token != null && msg.token === this.token) || this.isTrusted(remote);
+		if (trusted) return this._acceptGuest(conn, remote);
+		if (this._pending) return rejectConn(conn, 'busy');
+		this._askApproval(conn, remote);
+	}
 
+	_askApproval(conn, remote) {
+		const onClose = () => settle('gone');
+		const settle = outcome => {
+			if (this._pending !== request) return;
+			this._pending = null;
+			clearTimeout(timer);
+			conn.off('close', onClose);
+			this.emit('approval-end', request);
+			const free = !this.ctl || this.remote?.deviceId === remote.deviceId;
+			if (outcome === 'allow' && conn.open && free) this._acceptGuest(conn, remote);
+			else if (outcome === 'allow') rejectConn(conn, 'busy');
+			else if (outcome === 'deny') rejectConn(conn, 'denied');
+			else if (outcome === 'timeout') rejectConn(conn, 'no-answer');
+			else closeConn(conn);
+		};
+		const request = { name: remote.name, allow: () => settle('allow'), deny: () => settle('deny'), cancel: () => settle('gone') };
+		const timer = setTimeout(() => settle('timeout'), APPROVAL_TIMEOUT);
+		this._pending = request;
+		conn.on('close', onClose);
+		conn.send({ ch: CH.SYS, type: 'pending' });
+		this.emit('approval', request);
+	}
+
+	_acceptGuest(conn, remote) {
 		this._teardownLink();
 		if (this.state === 'connected') this._setState('waiting');
 		const gen = this._gen;
-		this.remote = { peerId: conn.peer, name: cleanName(msg.name), deviceId: msg.deviceId };
+		this.remote = remote;
 		this._attachCtl(conn);
-		this.send(CH.SYS, { type: 'welcome', ...identity() });
+		this.send(CH.SYS, { type: 'welcome', ...identity(), token: this.token });
 		this._timer = setTimeout(() => {
 			if (gen === this._gen && !this.file?.open) this._linkLost();
 		}, CONNECT_TIMEOUT);
@@ -320,11 +522,22 @@ export class Session extends Emitter {
 					this.emit('rtt', this.rtt);
 				}
 				break;
+			case 'pending':
+				this._onPending();
+				break;
 			case 'welcome':
 				this._onWelcome(msg);
 				break;
 			case 'reject':
-				if (this.role === 'guest') this._fail(msg.reason === 'version' ? 'version' : 'busy');
+				if (this.role === 'guest') this._fail(REJECTIONS.has(msg.reason) ? msg.reason : 'busy');
+				break;
+			case 'bye':
+				if (this.role === 'guest') {
+					this._fail('ended');
+				} else {
+					this.emit('left', this.remote);
+					this._linkLost();
+				}
 				break;
 		}
 	}
@@ -333,26 +546,34 @@ export class Session extends Emitter {
 		clearTimeout(this._timer);
 		const gen = this._gen;
 		this.everConnected = true;
+		this._linkAttempts = 0;
+		this.retryError = null;
 		this._lastSeen = Date.now();
 		this._pingTimer = setInterval(() => {
 			if (gen !== this._gen) return;
-			if (Date.now() - this._lastSeen > LOST_AFTER) this._linkLost();
+			if (Date.now() - this._lastSeen > LOST_AFTER) this._linkLost('lost');
 			else this.send(CH.SYS, { type: 'ping', t: performance.now() });
 		}, PING_INTERVAL);
 		for (const pc of [this.ctl?.peerConnection, this.file?.peerConnection]) {
 			pc?.addEventListener('iceconnectionstatechange', () => {
-				if (gen === this._gen && (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed')) this._linkLost();
+				if (gen === this._gen && (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed')) this._linkLost('lost');
 			});
 		}
 		this._setState('connected');
 		this.send(CH.SYS, { type: 'ping', t: performance.now() });
+		this.emit('paired', this.remote);
 	}
 
-	_linkLost() {
-		const wasConnecting = this.state === 'connecting';
+	_linkLost(code = null) {
+		const wasConnecting = this.state === 'connecting' || this.state === 'pending';
 		this._teardownLink();
-		if (this.role === 'host') this._setState('waiting');
-		else this._fail(wasConnecting ? 'webrtc' : 'lost');
+		if (this.role === 'host') {
+			if (this.state === 'connected') this._setState('waiting');
+			return;
+		}
+		const reason = code ?? (wasConnecting ? 'webrtc' : 'lost');
+		if (this.everConnected) this._scheduleReconnect(reason);
+		else this._fail(reason);
 	}
 
 	_teardownLink() {
@@ -362,16 +583,20 @@ export class Session extends Emitter {
 		const { ctl, file } = this;
 		this.ctl = this.file = null;
 		this.rtt = null;
-		for (const conn of [ctl, file]) {
-			try {
-				conn?.close();
-			} catch {
-				// already closed
-			}
-		}
+		for (const conn of [ctl, file]) closeConn(conn);
+	}
+
+	_halt() {
+		this._clearBroker();
+		this._clearRetry();
+		this._pending?.cancel();
+		this._teardownLink();
+		this._dropPeer();
 	}
 
 	_fail(code) {
+		this._clearRetry();
+		this._pending?.cancel();
 		this._teardownLink();
 		this._setState('failed', code);
 	}
@@ -382,14 +607,36 @@ export class Session extends Emitter {
 		this.error = error;
 		this.emit('state', state, error);
 	}
+
+	/** Re-render for details that aren't a state change (e.g. idTakenSince). */
+	_changed() {
+		if (!this._destroyed) this.emit('state', this.state, this.error);
+	}
 }
 
 function identity() {
-	return { v: PROTOCOL_VERSION, name: deviceName(), deviceId: deviceId() };
+	return { v: PROTOCOL_VERSION, name: device.name, deviceId: device.id };
 }
 
-function cleanName(name) {
-	return String(name || 'Device').slice(0, 60);
+function cleanId(id) {
+	return typeof id === 'string' && /^[0-9a-f]{8,64}$/.test(id) ? id : null;
+}
+
+function closeConn(conn) {
+	try {
+		conn?.close();
+	} catch {
+		// already closed
+	}
+}
+
+function rejectConn(conn, reason) {
+	try {
+		conn.send({ ch: CH.SYS, type: 'reject', reason });
+	} catch {
+		// the guest will time out instead
+	}
+	setTimeout(() => closeConn(conn), 1000);
 }
 
 function drain(dc) {

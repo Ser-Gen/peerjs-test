@@ -4,23 +4,33 @@ export function randomId(bytes = 8) {
 		.join('');
 }
 
-let memoryDeviceId;
+export function randomInt(max) {
+	return crypto.getRandomValues(new Uint32Array(1))[0] % max;
+}
 
-/**
- * Identifies this tab across reloads, so a reloaded guest can take over its own
- * stale connection instead of being refused as a second device.
- */
-export function deviceId() {
+export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/** localStorage JSON that never throws: null when missing, unreadable or blocked. */
+export function readJSON(key) {
 	try {
-		let id = sessionStorage.getItem('peerkit.deviceId');
-		if (!id) sessionStorage.setItem('peerkit.deviceId', (id = randomId()));
-		return id;
+		return JSON.parse(localStorage.getItem(key));
 	} catch {
-		return (memoryDeviceId ??= randomId());
+		return null;
 	}
 }
 
-export function deviceName() {
+export function writeJSON(key, value) {
+	try {
+		localStorage.setItem(key, JSON.stringify(value));
+		return true;
+	} catch (err) {
+		console.warn(`[peerkit] could not save ${key}`, err);
+		return false;
+	}
+}
+
+/** A readable name until the user sets one: "Android phone", "Chrome on Mac"… */
+export function defaultDeviceName() {
 	const ua = navigator.userAgent;
 	if (/Android/i.test(ua)) return /Mobile/i.test(ua) ? 'Android phone' : 'Android tablet';
 	if (/iPhone/.test(ua)) return 'iPhone';
@@ -60,6 +70,18 @@ export function formatDuration(seconds) {
 	return `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
+export function timeAgo(time, now = Date.now()) {
+	const minutes = Math.round((now - time) / 60000);
+	if (minutes < 1) return 'just now';
+	if (minutes < 60) return `${minutes} min ago`;
+	const hours = Math.round(minutes / 60);
+	if (hours < 24) return `${hours} h ago`;
+	const days = Math.round(hours / 24);
+	if (days === 1) return 'yesterday';
+	if (days < 7) return `${days} days ago`;
+	return new Date(time).toLocaleDateString();
+}
+
 export async function copyText(text) {
 	try {
 		await navigator.clipboard.writeText(text);
@@ -76,6 +98,30 @@ export async function copyText(text) {
 		ta.remove();
 		return ok;
 	}
+}
+
+/**
+ * Hold a cross-tab lock while this page lives, so two tabs don't fight over one peer ID.
+ * Resolves false if another tab has it. `steal` takes it over, and the losing tab's `onLost` runs.
+ * Without the Web Locks API (insecure context) every tab gets the lock.
+ */
+export function claimTab(name, { steal = false, onLost } = {}) {
+	if (!navigator.locks?.request) return Promise.resolve(true);
+	return new Promise(resolve => {
+		navigator.locks
+			.request(name, steal ? { steal: true } : { ifAvailable: true }, lock => {
+				resolve(Boolean(lock));
+				return lock ? new Promise(() => {}) : undefined; // held until the page goes away
+			})
+			.catch(err => {
+				if (err?.name === 'AbortError') {
+					onLost?.();
+				} else {
+					console.warn('[peerkit] tab lock failed', err);
+					resolve(true);
+				}
+			});
+	});
 }
 
 /** Reference-counted screen wake lock; re-acquired when the page becomes visible again. */

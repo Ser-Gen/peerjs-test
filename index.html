@@ -34,16 +34,7 @@
 
 		<main>
 			<section id="view-pair" class="view pair" hidden>
-				<h1>Pair a device</h1>
-				<p class="hint">Scan the code with the other device's camera, or send it the link.</p>
-				<div id="qr" class="qr" role="img" aria-label="QR code with the session link"></div>
-				<p id="pair-server" class="server-line"></p>
-				<input id="link" class="link" type="text" readonly aria-label="Session link">
-				<div class="actions">
-					<button id="copy-link" class="btn primary" type="button">Copy link</button>
-					<button id="share-link" class="btn" type="button" hidden>Share…</button>
-				</div>
-				<button id="back-to-session" class="btn ghost" type="button" hidden>Back to session</button>
+				<div id="pair-root" class="pair-inner"></div>
 				<details class="legacy">
 					<summary>Old demos</summary>
 					<p>

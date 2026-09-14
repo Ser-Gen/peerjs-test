@@ -1,11 +1,23 @@
 // Bump when messages change incompatibly; peers with different versions refuse to pair.
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 // Message channels on the control connection. Every message is `{ ch, type, ...payload }`.
 export const CH = {
-	SYS: 'sys', // hello / welcome / reject / ping / pong
+	SYS: 'sys', // pairing, ping / pong
 	TRANSFER: 'transfer', // text + file offers
 };
+
+/*
+ * Pairing (ch: 'sys'):
+ *   hello   {v, name, deviceId, token?, auto}  guest → host; auto = an automatic reconnect attempt
+ *   pending {}                                 host → guest; the host screen asks whether to let it in
+ *   welcome {v, name, deviceId, token}         host → guest; the token lets it back in without asking
+ *   reject  {reason}                           host → guest; busy | version | denied | no-answer | ended
+ *   bye     {}                                 either side ends the session on purpose
+ */
+
+// The secret in a QR code or link that lets a guest in without the host confirming it.
+export const TOKEN_RE = /^[0-9a-f]{12}$/;
 
 // peerjs DataConnection labels.
 export const LABEL = {

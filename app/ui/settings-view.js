@@ -8,8 +8,9 @@ import {
 	serverAddress,
 	testServer,
 } from '../settings.js';
-import { copyText } from '../util.js';
-import { button, h, icon, toast } from './dom.js';
+import { MAX_NAME, device } from '../device.js';
+import { copyText, defaultDeviceName } from '../util.js';
+import { button, h, icon, openDialog, toast } from './dom.js';
 
 const TEST_ERRORS = {
 	timeout: `No answer within ${TEST_TIMEOUT / 1000} s. Check the host and port.`,
@@ -73,6 +74,22 @@ export class SettingsView {
 					!currentSaved && h('p', { class: 'hint' }, `This session uses “${current.name}” from the link.`),
 					h('ul', { class: 'profiles' }, list.map(p => this.renderProfile(p, p.id === activeId, sameConnection(p, current)))),
 					button('Add server', 'plus', () => this.edit(null, {}), 'btn')),
+
+				h('section', { class: 'settings-section' },
+					h('h2', {}, 'This device'),
+					h('label', { class: 'field' },
+						h('span', {}, 'Name'),
+						h('input', {
+							class: 'input',
+							value: device.customName,
+							placeholder: defaultDeviceName(),
+							maxlength: MAX_NAME,
+							autocomplete: 'off',
+							autocapitalize: 'sentences',
+							enterkeyhint: 'done',
+							onchange: e => this.saveName(e.target),
+						}),
+						h('small', {}, 'The other device sees this name, also when a host asks whether to let this device in. Used from the next connection.'))),
 
 				h('section', { class: 'settings-section' },
 					h('h2', {}, 'Backup'),
@@ -269,16 +286,18 @@ export class SettingsView {
 		});
 	}
 
+	saveName(input) {
+		const name = device.setName(input.value);
+		input.value = device.customName;
+		toast(`This device is “${name}”`);
+	}
+
 	openDialog(content) {
 		this.dialog?.close();
-		const dialog = h('dialog', { class: 'sheet' }, content);
-		// Esc and the Android back gesture close a modal dialog; clean up however it closes.
+		const dialog = openDialog(content);
 		dialog.addEventListener('close', () => {
-			dialog.remove();
 			if (this.dialog === dialog) this.dialog = null;
 		});
-		document.body.append(dialog);
-		dialog.showModal();
 		this.dialog = dialog;
 		return dialog;
 	}

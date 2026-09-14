@@ -45,9 +45,10 @@ demos/                  old demos, untouched, with their original peerjs/qrcode 
 - A tool subscribes to its own channel on the session bus.
 - `supported()` hides tools the device can't run. For example, screen share is hidden on Android.
 
-**Link format:** `https://<pages>/#join=<roomId>&s=<base64url(profile)>`
+**Link format:** `https://<pages>/#join=<room code>&t=<token>&s=<base64url(profile)>`
 - The fragment never reaches the web server.
 - `s` is left out for the default profile, which keeps the QR small.
+- `t` is the host's secret: a guest that has it connects without an approval prompt. A typed code has no `t`.
 
 **Profile shape:** `{ name, host, port, path, key, secure, iceServers? }`
 - `iceServers` is optional and has no UI for now. It leaves room for TURN later without changing the link format.
@@ -166,6 +167,19 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
   - An unknown device joining by typed code shows an "Allow *device name*?" prompt.
 - Detect a second tab using the same stable ID and show "App is open in another tab".
 
+**As built** (`app/rooms.js`, `app/device.js`, `app/ui/pair-view.js`, `app/session.js`)
+- The start screen has two tabs, **Show code** (big room code, QR, link) and **Join** (code input, server name, Recent hosts). The app remembers the last tab, so a phone that usually joins opens on Join.
+- The code is `word-NN` (about 12 000 per server), stored per server in `peerkit.rooms` with a random link token `t` and up to 5 remembered devices. **New code** replaces all three.
+- Who gets in without a prompt: a device with the token (QR, link, Recent hosts), a remembered device, or the device that is already the guest (reload). A typed code from an unknown device opens an "Let … connect?" dialog; Esc or the back gesture means no, and 60 s without an answer refuses. An approved guest receives the token, so it isn't asked again.
+- The device ID is now per browser (`peerkit.device`, localStorage) instead of per tab. Settings → **This device** sets the name the other side sees.
+- One tab per session through the Web Locks API (not available on `http://<lan-ip>`). The second tab shows "Open in another tab" with **Use this tab**, which moves the session there.
+- The server refusing the host's ID is retried every 3 s. After 60 s the screen offers **Use a new code**.
+- Reconnect: the guest backs off 1, 2, 4… 15 s for as long as the page is open and shows **Retry now**. Returning to the page or the network coming back triggers a check right away: a ping must be answered within 4 s.
+- **Disconnect** (host) and **Leave** (guest) send `bye`, so the other side doesn't wait for a reconnect. The host refuses the disconnected device's automatic reconnects, but "Join again" works.
+- The Join field also accepts a pasted PeerKit link, and it refuses the device's own code.
+- Fix: a guest opening a link without `s` now uses the public server, not its own active profile.
+- Not built: nicknames for recent hosts (the host's device name is shown instead) and a list of remembered devices (New code revokes them all).
+
 **Tricky points**
 - After a reload, the broker keeps the old ID reserved for roughly the alive timeout (60 s by default on peerjs-server). Expect `unavailable-id` on a fast reload and retry quietly for a while before showing an error.
 - Short codes can be guessed. The approval prompt for unknown guests is the only access control, so keep it on by default for typed-code joins.
@@ -179,8 +193,10 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - [ ] Type the room code on the phone's Join screen: connects.
 - [ ] A second, never-seen device joining by code triggers an allow/deny prompt on the host.
 - [ ] Phone's Recent hosts shows the laptop; one tap reconnects after closing the browser.
-- [ ] Opening the host in a second tab shows the "open in another tab" message.
+- [ ] Opening the host in a second tab shows the "open in another tab" message; "Use this tab" moves the session and the first tab says so.
 - [ ] Regenerate code: old QR stops working, new one works.
+- [ ] Host "Disconnect": the phone shows "Session ended" and doesn't reconnect by itself; "Join again" connects.
+- [ ] A mistyped code shows "Host not found"; entering the laptop's own code on the laptop is refused.
 
 ### Slice 4 — Live camera and screen
 

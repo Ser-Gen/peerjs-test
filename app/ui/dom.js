@@ -60,4 +60,13 @@ export function toast(message) {
 	setTimeout(() => el.remove(), 2500);
 }
 
-export const timeLabel = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+/** Show a modal <dialog>. Esc and the Android back gesture close it; it is removed however it closes. */
+export function openDialog(content) {
+	const dialog = h('dialog', { class: 'sheet' }, content);
+	dialog.addEventListener('close', () => dialog.remove());
+	document.body.append(dialog);
+	dialog.showModal();
+	return dialog;
+}
+
+export const timeLabel =() => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
