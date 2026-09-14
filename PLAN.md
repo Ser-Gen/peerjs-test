@@ -99,8 +99,8 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - [x] RTT in the status bar updates on both sides.
 - [x] Text sent phone → laptop and laptop → phone appears; links are clickable; copy button works.
 - [x] Send a photo from phone to laptop; progress shows; the file downloads and opens.
-- [ ] Send a ~500 MB video laptop → phone; progress is smooth, the page stays responsive, and the phone screen doesn't sleep.
-- [ ] Cancel mid-transfer on either side stops both sides cleanly.
+- [x] Send a ~500 MB video laptop → phone; progress is smooth, the page stays responsive, and the phone screen doesn't sleep.
+- [x] Cancel mid-transfer on either side stops both sides cleanly.
 - [x] A third device opening the same link is refused with a clear message.
 - [x] Layout is usable one-handed on the phone in portrait with no horizontal scroll.
 
@@ -186,17 +186,17 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - A typed code only works if both devices are on the same server. Say so in the UI.
 
 **Checklist**
-- [ ] Reload the laptop (host): within ~1 min the phone reconnects by itself without re-scanning.
-- [ ] Lock the phone for 30 s, unlock: connection comes back and status shows it.
-- [ ] Turn phone Wi-Fi off/on: "Reconnecting…" then "Connected".
-- [ ] Yesterday's QR (same laptop, same profile) still connects.
-- [ ] Type the room code on the phone's Join screen: connects.
-- [ ] A second, never-seen device joining by code triggers an allow/deny prompt on the host.
-- [ ] Phone's Recent hosts shows the laptop; one tap reconnects after closing the browser.
-- [ ] Opening the host in a second tab shows the "open in another tab" message; "Use this tab" moves the session and the first tab says so.
-- [ ] Regenerate code: old QR stops working, new one works.
-- [ ] Host "Disconnect": the phone shows "Session ended" and doesn't reconnect by itself; "Join again" connects.
-- [ ] A mistyped code shows "Host not found"; entering the laptop's own code on the laptop is refused.
+- [x] Reload the laptop (host): within ~1 min the phone reconnects by itself without re-scanning.
+- [x] Lock the phone for 30 s, unlock: connection comes back and status shows it.
+- [x] Turn phone Wi-Fi off/on: "Reconnecting…" then "Connected".
+- [x] Yesterday's QR (same laptop, same profile) still connects.
+- [x] Type the room code on the phone's Join screen: connects.
+- [x] A second, never-seen device joining by code triggers an allow/deny prompt on the host.
+- [x] Phone's Recent hosts shows the laptop; one tap reconnects after closing the browser.
+- [x] Opening the host in a second tab shows the "open in another tab" message; "Use this tab" moves the session and the first tab says so.
+- [x] Regenerate code: old QR stops working, new one works.
+- [x] Host "Disconnect": the phone shows "Session ended" and doesn't reconnect by itself; "Join again" connects.
+- [x] A mistyped code shows "Host not found"; entering the laptop's own code on the laptop is refused.
 
 ### Slice 4 — Live camera and screen
 
@@ -223,16 +223,16 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - Receiving works on `http://<lan-ip>` too; sharing needs HTTPS. The camera falls back to video only when the mic is missing or blocked.
 
 **Checklist**
-- [ ] Phone → laptop: back camera appears on laptop; switch to front camera without the stream restarting.
-- [ ] Laptop receives muted; "Tap for sound" enables audio.
-- [ ] Laptop → phone: screen share shows on phone, fullscreen works in landscape.
-- [ ] "Screen" source is not offered on the phone.
-- [ ] Stop on the sender makes the receiver show "Stream ended"; starting again works without reload.
-- [ ] Send a file while a camera stream is running — both work.
-- [ ] Reload during a stream: session reconnects (Slice 3) and the stream can be restarted with one tap.
-- [ ] Turn phone Wi-Fi off/on for a few seconds while sharing its camera: the video comes back by itself.
-- [ ] Both directions at once: phone camera on the laptop and laptop screen on the phone.
-- [ ] "Close" on the receiver stops the sender's camera (the camera light goes off).
+- [x] Phone → laptop: back camera appears on laptop; switch to front camera without the stream restarting.
+- [x] Laptop receives muted; "Tap for sound" enables audio.
+- [x] Laptop → phone: screen share shows on phone, fullscreen works in landscape.
+- [x] "Screen" source is not offered on the phone.
+- [x] Stop on the sender makes the receiver show "Stream ended"; starting again works without reload.
+- [x] Send a file while a camera stream is running — both work.
+- [x] Reload during a stream: session reconnects (Slice 3) and the stream can be restarted with one tap.
+- [x] Turn phone Wi-Fi off/on for a few seconds while sharing its camera: the video comes back by itself.
+- [x] Both directions at once: phone camera on the laptop and laptop screen on the phone.
+- [x] "Close" on the receiver stops the sender's camera (the camera light goes off).
 
 ### Slice 5 — Record incoming stream
 
