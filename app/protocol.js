@@ -12,7 +12,8 @@ export const CH = {
  * Pairing (ch: 'sys'):
  *   hello   {v, name, deviceId, token?, auto}  guest → host; auto = an automatic reconnect attempt
  *   pending {}                                 host → guest; the host screen asks whether to let it in
- *   welcome {v, name, deviceId, token}         host → guest; the token lets it back in without asking
+ *   welcome {v, name, deviceId, token, turn?}  host → guest; the token lets it back in without asking,
+ *                                              turn = temporary TURN credentials {host, port, tlsPort, username, credential}
  *   reject  {reason}                           host → guest; busy | version | denied | no-answer | ended
  *   bye     {}                                 either side ends the session on purpose
  */

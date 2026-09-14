@@ -65,13 +65,15 @@ export function describeError(code) {
  * 'approval' / 'approval-end' (request: {name, allow(), deny()}) for a device that needs the host's OK.
  */
 export class Session extends Emitter {
-	constructor({ role, peerId = null, token = null, peerOptions = {}, isTrusted = () => false }) {
+	constructor({ role, peerId = null, token = null, peerOptions = {}, isTrusted = () => false, guestTurn = () => null }) {
 		super();
 		this.role = role;
 		this.hostId = peerId; // host: our own stable ID; guest: the host's
 		this.token = token; // host: expected from guests; guest: sent to the host
 		this.peerOptions = peerOptions;
 		this.isTrusted = isTrusted;
+		this.guestTurn = guestTurn; // host: temporary TURN credentials to send with welcome
+		this.hostTurn = null; // guest: what the host sent with welcome (unvalidated)
 		this.state = 'idle';
 		this.error = null;
 		this.id = null;
@@ -207,9 +209,9 @@ export class Session extends Emitter {
 	}
 
 	/** Send a media stream to the paired device (peerjs MediaConnection). Null when that isn't possible now. */
-	call(stream, metadata) {
+	call(stream, metadata, options = {}) {
 		if (this.state !== 'connected' || !this.peer?.open || !this.remote) return null;
-		return this.peer.call(this.remote.peerId, stream, { metadata }) ?? null;
+		return this.peer.call(this.remote.peerId, stream, { ...options, metadata }) ?? null;
 	}
 
 	// --- peer / signaling ---
@@ -387,6 +389,7 @@ export class Session extends Emitter {
 			return;
 		}
 		if (typeof msg.token === 'string' && TOKEN_RE.test(msg.token)) this.token = msg.token;
+		this.hostTurn = msg.turn ?? null;
 		this.remote = { peerId: this.ctl.peer, name: cleanName(msg.name) || 'Device', deviceId: cleanId(msg.deviceId) };
 		const gen = this._gen;
 		if (this.state === 'pending') this._setState('connecting');
@@ -470,7 +473,7 @@ export class Session extends Emitter {
 		const gen = this._gen;
 		this.remote = remote;
 		this._attachCtl(conn);
-		this.send(CH.SYS, { type: 'welcome', ...identity(), token: this.token });
+		this.send(CH.SYS, { type: 'welcome', ...identity(), token: this.token, turn: this.guestTurn() ?? undefined });
 		this._timer = setTimeout(() => {
 			if (gen === this._gen && !this.file?.open) this._linkLost();
 		}, CONNECT_TIMEOUT);

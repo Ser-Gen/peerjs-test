@@ -2,6 +2,7 @@ import { cleanName } from './device.js';
 import { Emitter } from './emitter.js';
 import { TOKEN_RE } from './protocol.js';
 import { decodeProfile, encodeProfile, isPublic, normalizeProfile, serverKey } from './settings.js';
+import { decodeTurn, encodeTurn, parseGuestTurn } from './turn.js';
 import { randomId, randomInt, readJSON, writeJSON } from './util.js';
 
 const ROOMS_KEY = 'peerkit.rooms';
@@ -33,23 +34,27 @@ export function parseRoomCode(input) {
 	return match ? `${match[1]}-${match[2]}` : null;
 }
 
-// --- links: #join=<code>&t=<token>&s=<server> ---
+// --- links: #join=<code>&t=<token>&s=<server>&r=<TURN credentials> ---
 
-export function joinLink({ code, token = null, profile }) {
+export function joinLink({ code, token = null, profile, turn = null }) {
 	let hash = `join=${code}`;
 	if (token) hash += `&t=${token}`;
 	// The public server is the default on both ends, so leaving it out keeps the QR small.
 	if (!isPublic(profile)) hash += `&s=${encodeProfile(profile)}`;
+	// Temporary credentials only; the secret never goes into a link.
+	if (turn) hash += `&r=${encodeTurn(turn)}`;
 	return `${location.origin}${location.pathname}#${hash}`;
 }
 
-/** `{ isJoin: false }` for a host page, otherwise `{ isJoin: true, code, token, profile, error }`. */
+/** `{ isJoin: false }` for a host page, otherwise `{ isJoin: true, code, token, profile, turn, error }`. */
 export function parseLink(hash) {
 	const params = new URLSearchParams(String(hash ?? '').replace(/^#/, ''));
-	if (!params.has('join')) return { isJoin: false, code: null, token: null, profile: null, error: null };
+	if (!params.has('join')) return { isJoin: false, code: null, token: null, profile: null, turn: null, error: null };
 	const code = parseRoomCode(params.get('join'));
 	const token = TOKEN_RE.test(params.get('t') ?? '') ? params.get('t') : null;
-	const link = { isJoin: true, code, token, profile: null, error: null };
+	// Damaged or expired credentials don't break the link: the host's relay usually still works.
+	const turn = params.has('r') ? decodeTurn(params.get('r')) : null;
+	const link = { isJoin: true, code, token, profile: null, turn, error: null };
 	if (!code) return { ...link, error: 'invalid-id' };
 	if (!params.has('s')) return link;
 	try {
@@ -130,6 +135,7 @@ function parseEntry(raw) {
 		token: TOKEN_RE.test(raw.token) ? raw.token : null,
 		name: cleanName(raw.name) || code,
 		profile,
+		turn: parseGuestTurn(raw.turn),
 		lastSeen: Number.isFinite(raw.lastSeen) ? raw.lastSeen : 0,
 	};
 }
@@ -143,7 +149,7 @@ class RecentHosts extends Emitter {
 		});
 	}
 
-	/** Newest first: `{ key, code, token, name, profile, lastSeen }`. */
+	/** Newest first: `{ key, code, token, name, profile, turn, lastSeen }`. */
 	list() {
 		const raw = readJSON(RECENT_KEY);
 		if (raw?.version !== VERSION || !Array.isArray(raw.hosts)) return [];
@@ -155,14 +161,16 @@ class RecentHosts extends Emitter {
 		return this.list().find(entry => entry.key === key) ?? null;
 	}
 
-	touch({ code, token, name, profile }) {
+	touch({ code, token, name, profile, turn = null }) {
 		const key = entryKey(profile, code);
 		const previous = this.list();
+		const before = previous.find(e => e.key === key);
 		const entry = {
 			code,
-			token: token ?? previous.find(e => e.key === key)?.token ?? null,
+			token: token ?? before?.token ?? null,
 			name: cleanName(name) || code,
 			profile: normalizeProfile(profile),
+			turn: turn ?? before?.turn ?? null,
 			lastSeen: Date.now(),
 		};
 		this._save([entry, ...previous.filter(e => e.key !== key)]);

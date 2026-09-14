@@ -163,7 +163,8 @@ h2 {
 	background: var(--bad);
 }
 
-.rtt {
+.rtt,
+.route {
 	flex: none;
 	padding: 0.05rem 0.45rem;
 	border-radius: 999px;
@@ -171,6 +172,17 @@ h2 {
 	color: var(--text);
 	font-size: 0.75rem;
 	font-variant-numeric: tabular-nums;
+}
+
+.route[data-relayed="true"] {
+	background: color-mix(in srgb, var(--accent) 20%, var(--surface-2));
+}
+
+/* On the narrowest phones the device name matters more. */
+@media (max-width: 22rem) {
+	.route {
+		display: none;
+	}
 }
 
 .banner {
@@ -625,6 +637,7 @@ h2 {
 	flex: 1;
 	min-height: 0;
 	display: grid;
+	grid-template: minmax(0, 1fr) / minmax(0, 1fr);
 	place-items: center;
 	overflow: hidden;
 }
@@ -636,8 +649,10 @@ h2 {
 	color: #ffffff;
 }
 
+/* Out of the layout: a video's natural size would otherwise grow the stage under the bars. */
 .stage > video {
-	grid-area: 1 / 1;
+	position: absolute;
+	inset: 0;
 	width: 100%;
 	height: 100%;
 	object-fit: contain;
@@ -648,11 +663,11 @@ h2 {
 }
 
 .stream.has-remote .stage > .preview {
-	position: absolute;
-	right: 0.75rem;
-	bottom: 0.75rem;
+	inset: auto 0.75rem 0.75rem auto;
+	z-index: 1;
 	width: min(30%, 11rem);
 	height: auto;
+	max-height: 40%;
 	border-radius: 10px;
 	box-shadow: 0 2px 10px rgb(0 0 0 / 0.5);
 	object-fit: cover;
@@ -670,6 +685,8 @@ h2 {
 	grid-area: 1 / 1;
 	z-index: 1;
 	max-width: 22rem;
+	max-height: 100%;
+	overflow: auto;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
@@ -1112,6 +1129,12 @@ progress::-moz-progress-bar {
 .profile-actions,
 .profile .test-result {
 	padding-left: 2rem;
+}
+
+/* The TURN card has no radio button to line up with. */
+.profile.turn .profile-actions,
+.profile.turn .test-result {
+	padding-left: 0;
 }
 
 .profile-actions {

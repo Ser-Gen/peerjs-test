@@ -146,7 +146,8 @@ export class PairView {
 		if (code === this.own?.code && serverKey(profile) === this.own.server) {
 			return this.showJoinError('That is this device’s own code. Enter it on the other device.');
 		}
-		this.onJoin(joinLink({ code, token: recentHosts.find(profile, code)?.token, profile }));
+		const recent = recentHosts.find(profile, code);
+		this.onJoin(joinLink({ code, token: recent?.token, turn: recent?.turn, profile }));
 	}
 
 	showJoinError(message) {

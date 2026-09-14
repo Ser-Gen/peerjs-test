@@ -22,7 +22,7 @@ export const PUBLIC_PROFILE = Object.freeze({
 	builtin: true,
 });
 
-const HOST_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+export const HOST_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 const PATH_RE = /^\/(?:[A-Za-z0-9._~-]+\/)*$/;
 const KEY_RE = /^[A-Za-z0-9._~-]{1,64}$/;
 const ICE_URL_RE = /^(?:stun|stuns|turn|turns):\S{1,250}$/;
@@ -88,15 +88,15 @@ export const serverKey = p => `${p.host}:${p.port}${p.path}?key=${p.key}`;
 
 export const isPublic = p => serverKey(p) === serverKey(PUBLIC_PROFILE);
 
-/** Options for `new Peer()`. Without iceServers peerjs keeps its default STUN/TURN config. */
+/** Signaling options for `new Peer()`. The ICE config (STUN/TURN) comes from `IceConfig` in turn.js. */
 export function peerOptions(p) {
-	const options = { host: p.host, port: p.port, path: p.path, key: p.key, secure: p.secure };
-	if (p.iceServers) options.config = { iceServers: p.iceServers };
-	return options;
+	return { host: p.host, port: p.port, path: p.path, key: p.key, secure: p.secure };
 }
 
+const connectionKey = p => JSON.stringify([peerOptions(p), p.iceServers ?? null]);
+
 /** True when both profiles produce the same connection, whatever their names. */
-export const sameConnection = (a, b) => JSON.stringify(peerOptions(a)) === JSON.stringify(peerOptions(b));
+export const sameConnection = (a, b) => connectionKey(a) === connectionKey(b);
 
 export function serverAddress(p) {
 	const defaultPort = p.secure ? 443 : 80;
@@ -136,13 +136,13 @@ export function decodeProfile(encoded) {
 	return normalizeProfile({ name: compact.n, host: compact.h, port: compact.p, path: compact.a, key: compact.k, secure, iceServers: compact.i });
 }
 
-function toBase64url(str) {
+export function toBase64url(str) {
 	let binary = '';
 	for (const byte of new TextEncoder().encode(str)) binary += String.fromCharCode(byte);
 	return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-function fromBase64url(encoded) {
+export function fromBase64url(encoded) {
 	if (typeof encoded !== 'string' || !/^[A-Za-z0-9_-]{1,4000}$/.test(encoded)) throw new Error('not base64url');
 	const binary = atob(encoded.replace(/-/g, '+').replace(/_/g, '/'));
 	return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(binary, ch => ch.charCodeAt(0)));
@@ -240,14 +240,18 @@ class ProfileStore extends Emitter {
 		this._commit({ ...this._data, profiles, activeId });
 	}
 
-	exportJSON() {
+	/** `extra` adds top-level fields, e.g. `{ turn }`. */
+	exportJSON(extra = {}) {
 		const profiles = this._data.profiles.map(({ id, ...profile }) => profile);
-		return JSON.stringify({ app: 'peerkit', version: SETTINGS_VERSION, profiles }, null, 2);
+		return JSON.stringify({ app: 'peerkit', version: SETTINGS_VERSION, profiles, ...extra }, null, 2);
 	}
 
-	/** Import exported JSON or a PeerKit link. Servers that are already saved are skipped. */
+	/**
+	 * Import exported JSON or a PeerKit link. Servers that are already saved are skipped.
+	 * `turn` is the raw, unvalidated TURN block of exported JSON, for the caller to apply.
+	 */
 	importText(input) {
-		const entries = parseImport(input);
+		const { entries, turn } = parseImport(input);
 		const profiles = [...this._data.profiles];
 		const known = new Set([PUBLIC_PROFILE, ...profiles].map(serverKey));
 		let added = 0;
@@ -271,9 +275,9 @@ class ProfileStore extends Emitter {
 			profiles.push({ id: newId(), ...profile });
 			added++;
 		}
-		if (!added && !existing) throw new ProfileError('No valid servers found in this text.');
+		if (!added && !existing && !turn) throw new ProfileError('No valid servers found in this text.');
 		if (added) this._commit({ ...this._data, profiles });
-		return { added, existing, invalid };
+		return { added, existing, invalid, turn };
 	}
 
 	_load() {
@@ -324,11 +328,12 @@ function parseImport(input) {
 		} catch {
 			throw new ProfileError('This text is not valid JSON.');
 		}
-		const list = Array.isArray(data) ? data : Array.isArray(data?.profiles) ? data.profiles : [data];
-		return list.slice(0, MAX_PROFILES);
+		const turn = data && typeof data.turn === 'object' && !Array.isArray(data) ? data.turn : null;
+		const list = Array.isArray(data) ? data : Array.isArray(data?.profiles) ? data.profiles : turn ? [] : [data];
+		return { entries: list.slice(0, MAX_PROFILES), turn };
 	}
 	const hash = trimmed.includes('#') ? new URLSearchParams(trimmed.slice(trimmed.indexOf('#') + 1)) : null;
-	if (hash?.has('s')) return [decodeProfile(hash.get('s'))];
+	if (hash?.has('s')) return { entries: [decodeProfile(hash.get('s'))], turn: null };
 	if (hash?.has('join')) throw new ProfileError('This link uses the public server, which is always available.');
 	throw new ProfileError('Paste exported servers (JSON) or a PeerKit link.');
 }

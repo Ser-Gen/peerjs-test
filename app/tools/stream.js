@@ -7,6 +7,10 @@ const RESUME_KEY = 'peerkit.stream.resume'; // sessionStorage: what this tab sha
 const GRACE = 30000; // a stream survives a dropped link this long, so it can continue without a new tap
 const RESOLUTIONS = { '480p': [854, 480], '720p': [1280, 720], '1080p': [1920, 1080] };
 const AUDIO = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+// System audio is music and video sound, not a voice: no processing. restrictOwnAudio (where supported)
+// keeps this page's own playback, such as the other device's camera sound, out of the capture.
+const SCREEN_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true };
+const MUSIC_BITRATE = 256000;
 const KIND_NOUN = { camera: 'camera', screen: 'shared screen' };
 
 /*
@@ -106,7 +110,22 @@ function mediaError(err, kind) {
 	}
 }
 
-const stopTracks = stream => stream?.getTracks().forEach(track => track.stop());
+/**
+ * WebRTC tunes Opus for speech by default: mono, about 32 kbit/s, silence dropped. For screen audio ask
+ * for stereo at a music bitrate. Both sides apply it to their own SDP, since the sender follows the answer.
+ */
+function musicSdp(sdp) {
+	const pt = /a=rtpmap:(\d+) opus\/48000/i.exec(sdp)?.[1];
+	if (!pt) return sdp;
+	return sdp.replace(new RegExp(`a=fmtp:${pt} (.*)`), (_, params) => {
+		const kept = params.split(';').map(p => p.trim()).filter(p => p && !/^(stereo|sprop-stereo|maxaveragebitrate|usedtx)=/.test(p));
+		return `a=fmtp:${pt} ${[...kept, 'stereo=1', 'sprop-stereo=1', `maxaveragebitrate=${MUSIC_BITRATE}`, 'usedtx=0'].join(';')}`;
+	});
+}
+
+const callOptions = kind => (kind === 'screen' ? { sdpTransform: musicSdp } : {});
+
+const stopTracks = stream =>stream?.getTracks().forEach(track => track.stop());
 
 function closeCall(item) {
 	const call = item.call;
@@ -237,9 +256,10 @@ class StreamTool {
 		this.render();
 		try {
 			// Nothing may be awaited before this call: it needs the click's user activation.
-			const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: true });
+			const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: SCREEN_AUDIO });
 			if (!this.connected) return stopTracks(stream);
 			stream.getVideoTracks()[0].contentHint = 'detail';
+			for (const track of stream.getAudioTracks()) track.contentHint = 'music';
 			this.beginOutgoing('screen', stream);
 		} catch (err) {
 			// Cancelling the picker is a NotAllowedError too.
@@ -281,7 +301,7 @@ class StreamTool {
 
 	callRemote(out) {
 		this.session.send(CH.STREAM, { type: 'start', id: out.id, kind: out.kind });
-		const call = this.session.call(out.stream, { id: out.id, kind: out.kind });
+		const call = this.session.call(out.stream, { id: out.id, kind: out.kind }, callOptions(out.kind));
 		if (!call) {
 			toast('Could not start the stream: the signaling server is not reachable');
 			this.stopOutgoing();
@@ -459,7 +479,7 @@ class StreamTool {
 			else this.pauseIncoming();
 		});
 		call.on('error', err => console.warn('[peerkit] media call error', err));
-		call.answer(); // receive only
+		call.answer(undefined, callOptions(inc.kind)); // receive only
 		this.render();
 	}
 

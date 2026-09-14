@@ -18,12 +18,15 @@ app/protocol.js         PROTOCOL_VERSION, channels, message list
 app/settings.js         server profiles: validation, link encoding, localStorage store, connection test
 app/rooms.js            room codes, trusted guests, recent hosts, link build/parse
 app/device.js           per-browser device ID and name
+app/turn.js             TURN device setting, credentials (HMAC), IceConfig, relay test, route detection
 app/util.js             storage helpers, Web Locks, wake lock, formatting
 app/tools/transfer.js   text and chunked file transfer
 app/tools/stream.js     camera / screen over peerjs media calls
 app/ui/                 dom.js (h() builder, icons, dialogs, toasts), qr.js, pair-view.js, settings-view.js, styles.css
 vendor/                 peerjs 1.5.5 UMD (window.Peer), qrcode.js
 demos/                  the old standalone demos with their own old libraries; don't change them
+docs/turn-server.md     coturn setup guide (the user runs the server)
+4player-nes/            local reference only, not committed: Kosmi's NES Party (FCEUX wasm build + glue code)
 ```
 
 ## Commands
@@ -37,7 +40,7 @@ There is no build step, no package.json and no test suite.
 
 ## Things that aren't obvious
 
-- **Link format:** `#join=<code>&t=<token>&s=<base64url profile>`. `s` is left out for the public server, which a guest then uses (not its own active profile). `t` lets the guest in without an approval prompt.
+- **Link format:** `#join=<code>&t=<token>&s=<base64url profile>`. `s` is left out for the public server, which a guest then uses (not its own active profile). `t` lets the guest in without an approval prompt. `r` carries temporary TURN credentials, never the secret.
 - **Host identity:** the host's peer ID is `pk-<room code>`. The code is stored per server (`serverKey` = host:port+path?key). After a reload the server may still hold the ID, so `unavailable-id` is retried quietly.
 - **peerjs quirks:**
   - A peer whose first registration fails is destroyed; one that was registered before is only disconnected (`reconnect()` works on it).
@@ -54,9 +57,10 @@ There is no build step, no package.json and no test suite.
   - Refused: automatic reconnects from a device the host disconnected on purpose (`_ended`).
 - **One tab per session:** enforced through Web Locks. A second tab can take the session over with `steal`.
 - **Tools:** a tool is `{ id, title, supported(), mount(el, session, ctx) → unmount }`, where `ctx = { activate(), notify() }`. Tools mount on the first connection and stay mounted through reconnects.
-- **Media:** calls go through the signaling server (`session.call`). Start, stop and close also go over the control channel, because peerjs closes a call only when ICE fails. A dropped link pauses a stream for 30 s and re-calls it with the same id.
+- **Media:** calls go through the signaling server (`session.call`). Start, stop and close also go over the control channel, because peerjs closes a call only when ICE fails. A dropped link pauses a stream for 30 s and re-calls it with the same id. Screen audio skips voice processing and is sent as stereo music-bitrate Opus through `sdpTransform`, applied on both the call and the answer.
+- **TURN:** a device setting (`peerkit.turn`), not part of a server profile. `IceConfig` owns the `config` object passed to `new Peer()`; peerjs reads it for every new RTCPeerConnection, so credentials are replaced in place, never by recreating the Peer. A host sends 7-day credentials in links and `welcome`; the secret stays on the device.
 - **Protocol changes:** bump `PROTOCOL_VERSION` for incompatible message changes.
-- **Stored data:** localStorage data is versioned (`peerkit.settings`, `.rooms`, `.recent`, `.device`). Validate everything read from storage, links or the peer, because all of it is untrusted.
+- **Stored data:** localStorage data is versioned (`peerkit.settings`, `.rooms`, `.recent`, `.device`, `.turn`). Validate everything read from storage, links or the peer, because all of it is untrusted.
 - **Settings screen:** it is a history entry (`pushState`), so the Android back gesture closes it. Editors are modal `<dialog>`s.
 - **Layout:** `.app` is a flex column, not a grid, so hidden bars don't break the layout. Inputs use 16px text so mobile browsers don't zoom on focus.
 - **Code style:** tabs, ES modules and the `h()` element builder. Never use `innerHTML` with untrusted text (see `linkify`).

@@ -2,6 +2,7 @@ import { device } from './device.js';
 import { hostPeerId, joinLink, parseLink, recentHosts, rooms } from './rooms.js';
 import { Session, describeError } from './session.js';
 import { PUBLIC_PROFILE, peerOptions, profiles, sameConnection, serverKey } from './settings.js';
+import { IceConfig, detectRoute, parseGuestTurn } from './turn.js';
 import { button, h, icon, openDialog, toast } from './ui/dom.js';
 import { PairView } from './ui/pair-view.js';
 import { SettingsView } from './ui/settings-view.js';
@@ -14,6 +15,10 @@ const TOOLS = [transfer, stream].filter(tool => tool.supported());
 // Retrying can't fix these.
 const FATAL_ERRORS = new Set(['bad-link', 'invalid-id', 'browser-incompatible']);
 const SERVER_ERRORS = new Set(['network', 'server-error', 'socket-error', 'socket-closed', 'disconnected', 'invalid-key', 'ssl-unavailable']);
+// Failures a TURN server usually fixes.
+const NO_ROUTE_ERRORS = new Set(['webrtc', 'timeout']);
+const ROUTE_CHECK_EVERY = 10000;
+const ICE_REFRESH_EVERY = 3600 * 1000;
 // How long the server may keep refusing the room code before a new one is suggested.
 const NEW_CODE_AFTER = 60000;
 const TITLE = document.title;
@@ -23,6 +28,7 @@ const els = {
 	status: $('status'),
 	statusText: $('status-text'),
 	rtt: $('rtt'),
+	route: $('route'),
 	openSettings: $('open-settings'),
 	leave: $('leave'),
 	banner: $('banner'),
@@ -52,13 +58,18 @@ const role = link.isJoin ? 'guest' : 'host';
 let profile = role === 'guest' ? (link.profile ?? PUBLIC_PROFILE) : profiles.active;
 const room = role === 'host' ? rooms.get(profile) : null;
 const code = room?.code ?? link.code;
+// A typed code carries no token or TURN credentials, but this device may have them from joining before.
+const recent = role === 'guest' && code ? recentHosts.find(profile, code) : null;
+const ice = new IceConfig({ role, base: profile.iceServers ?? null });
+if (role === 'guest') ice.adopt(link.turn ?? recent?.turn ?? null);
 const session = new Session({
 	role,
 	peerId: code ? hostPeerId(code) : null,
-	// A typed code carries no token, but this device may have one from joining before.
-	token: room?.token ?? link.token ?? (code ? recentHosts.find(profile, code)?.token : null) ?? null,
-	peerOptions: peerOptions(profile),
+	token: room?.token ?? link.token ?? recent?.token ?? null,
+	// peerjs keeps this config object, so new TURN credentials reach later connections.
+	peerOptions: { ...peerOptions(profile), config: ice.config },
 	isTrusted: remote => rooms.isTrusted(profile, remote.deviceId),
+	guestTurn: () => ice.forGuests,
 });
 
 let showPair = false;
@@ -68,8 +79,10 @@ let settingsOpen = false;
 let noticeDismissed = false;
 let approval = null; // { request, dialog } while the host asks whether to let a device in
 let claim = 0;
+let route = null; // { relayed, protocol } of the current link
+let routeCheckedAt = 0;
 
-const settingsView = new SettingsView(els.settings, { onClose: closeSettings, sessionProfile: () => profile });
+const settingsView = new SettingsView(els.settings, { onClose: closeSettings, sessionProfile: () => profile, ice });
 const pairView = role === 'host'
 	? new PairView(els.pairRoot, {
 		onJoin: join,
@@ -83,7 +96,10 @@ const pairView = role === 'host'
 	: null;
 
 session.on('state', render);
-session.on('rtt', renderRtt);
+session.on('rtt', () => {
+	renderRtt();
+	checkRoute();
+});
 session.on('paired', onPaired);
 session.on('left', () => {
 	showPair = true; // the guest left on purpose: show the code again instead of "waiting for it to come back"
@@ -93,6 +109,7 @@ session.on('approval-end', request => {
 	if (approval?.request === request) approval.dialog.close();
 });
 profiles.on('change', renderNotice);
+ice.on('change', render); // new credentials for guests change the link and QR
 
 // Opening another join link in this tab starts over with it.
 window.addEventListener('hashchange', () => location.reload());
@@ -102,9 +119,12 @@ window.addEventListener('pageshow', e => {
 });
 // Don't wait for timers that were throttled while the phone was locked or offline.
 document.addEventListener('visibilitychange', () => {
-	if (document.visibilityState === 'visible') session.checkHealth();
+	if (document.visibilityState !== 'visible') return;
+	ice.refresh();
+	session.checkHealth();
 });
 window.addEventListener('online', () => session.checkHealth());
+setInterval(() => ice.refresh(), ICE_REFRESH_EVERY);
 // Settings is a history entry, so the Android back gesture closes it.
 if (history.state?.peerkitSettings) history.replaceState(null, '');
 window.addEventListener('popstate', () => setSettingsOpen(history.state?.peerkitSettings === true));
@@ -126,6 +146,7 @@ els.noticeSave.addEventListener('click', () => {
 });
 
 window.peerkit = session; // handy for debugging from the console
+const iceReady = link.error ? null : ice.prepare();
 if (link.error) session.fail(link.error);
 else claimAndStart();
 render();
@@ -140,14 +161,23 @@ async function claimAndStart(steal = false) {
 		},
 	});
 	if (mine !== claim) return;
+	await iceReady; // TURN credentials must be in the config before the Peer exists
+	if (mine !== claim) return;
 	if (!ok) session.stop('other-tab');
 	else if (steal) session.retry();
 	else session.start();
 }
 
 function onPaired(remote) {
-	if (role === 'host') rooms.trust(profile, remote);
-	else recentHosts.touch({ code, token: session.token, name: remote.name, profile });
+	checkRoute(true);
+	if (role === 'host') {
+		rooms.trust(profile, remote);
+		return;
+	}
+	// Fresh credentials from the host replace the link's, for reconnects and later joins too.
+	const turn = parseGuestTurn(session.hostTurn);
+	if (turn) ice.adopt(turn);
+	recentHosts.touch({ code, token: session.token, name: remote.name, profile, turn: turn ?? ice.fromHost });
 }
 
 function askApproval(request) {
@@ -187,6 +217,8 @@ function render() {
 	els.leave.textContent = role === 'guest' ? 'Leave' : 'Disconnect';
 	els.openSettings.setAttribute('aria-pressed', String(settingsOpen));
 	renderRtt();
+	if (state !== 'connected') route = null;
+	renderRoute();
 
 	let view = 'session';
 	let banner = null;
@@ -238,6 +270,28 @@ function renderRtt() {
 	if (show) els.rtt.textContent = `${session.rtt} ms`;
 }
 
+/** Direct or relayed. ICE can switch routes after a network change, so this is checked again now and then. */
+async function checkRoute(force = false) {
+	if (session.state !== 'connected' || (!force && Date.now() - routeCheckedAt < ROUTE_CHECK_EVERY)) return;
+	routeCheckedAt = Date.now();
+	const ctl = session.ctl;
+	const result = await detectRoute(ctl?.peerConnection);
+	if (session.ctl !== ctl) return;
+	route = result;
+	renderRoute();
+}
+
+function renderRoute() {
+	const show = session.state === 'connected' && route != null;
+	els.route.hidden = !show;
+	if (!show) return;
+	els.route.textContent = route.relayed ? 'Relayed' : 'Direct';
+	els.route.dataset.relayed = String(route.relayed);
+	els.route.title = route.relayed
+		? `Through a TURN server${route.protocol ? ` (${route.protocol.toUpperCase()})` : ''}`
+		: 'Direct connection between the devices';
+}
+
 /** What the user can do about an error: [label, action] pairs, most useful first. */
 function errorActions(error) {
 	switch (error) {
@@ -260,7 +314,7 @@ const actionButtons = actions => actions.map(([label, fn], i) => button(label, n
 function renderPair() {
 	pairView.update({
 		code,
-		url: session.state === 'waiting' ? joinLink({ code, token: session.token, profile }) : null,
+		url: session.state === 'waiting' ? joinLink({ code, token: session.token, profile, turn: ice.forGuests }) : null,
 		profile,
 		status: hostStatus(),
 		showBack: session.everConnected,
@@ -295,8 +349,16 @@ function renderGuestMessage() {
 	if (state === 'failed') {
 		const { title, text } = describeError(error);
 		const actions = actionButtons(errorActions(error));
+		// Without any relay, strict networks can't be crossed at all.
+		const suggestTurn = NO_ROUTE_ERRORS.has(error) && !ice.active;
+		if (suggestTurn) actions.push(button('TURN settings', null, openSettings, 'btn'));
 		actions.push(button('Start over', null, startOver, actions.length ? 'btn' : 'btn primary'));
-		showMessage({ title, text, server: !FATAL_ERRORS.has(error), actions });
+		showMessage({
+			title,
+			text: suggestTurn ? `${text} A TURN server (Settings) fixes this on most networks.` : text,
+			server: !FATAL_ERRORS.has(error),
+			actions,
+		});
 	} else if (state === 'pending') {
 		showMessage({ spinner: true, title: 'Waiting for approval', text: `Confirm “${device.name}” on the host screen.` });
 	} else if (state === 'connecting') {

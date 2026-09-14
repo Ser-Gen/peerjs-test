@@ -9,8 +9,11 @@ import {
 	testServer,
 } from '../settings.js';
 import { MAX_NAME, device } from '../device.js';
+import { TLS_PORT, TURN_PORT, TurnError, canMint, normalizeTurn, testTurn, turnSettings } from '../turn.js';
 import { copyText, defaultDeviceName } from '../util.js';
 import { button, h, icon, openDialog, toast } from './dom.js';
+
+const TURN_TEST = 'turn'; // key in `tests`; profile ids are hex
 
 const TEST_ERRORS = {
 	timeout: `No answer within ${TEST_TIMEOUT / 1000} s. Check the host and port.`,
@@ -28,18 +31,51 @@ function describeTest({ ok, ms, error }) {
 	return { kind: 'bad', text: `✗ ${TEST_ERRORS[error] ?? `Failed: ${error}`}` };
 }
 
+function describeTurnTest({ ok, ms, results, error }, server) {
+	if (error === 'insecure') return { kind: 'bad', text: '✗ A shared secret needs HTTPS. Open PeerKit over https:// to use it.' };
+	if (error) return { kind: 'bad', text: '✗ Could not create credentials from the secret.' };
+	const failed = results.filter(r => !r.ok).map(r => r.transport);
+	if (ok) {
+		const passed = results.filter(r => r.ok).map(r => r.transport);
+		return { kind: 'ok', text: `✓ Relay works over ${passed.join(', ')} in ${ms} ms${failed.length ? ` · ${failed.join(', ')} failed` : ''}` };
+	}
+	if (results.some(r => r.error === 'auth')) {
+		return { kind: 'bad', text: '✗ The server rejected the credentials. Check the secret (or username and password) and the server clock.' };
+	}
+	const ports = `${server.port} (UDP/TCP)${server.tlsPort ? ` or ${server.tlsPort} (TLS)` : ''}`;
+	return { kind: 'bad', text: `✗ No relay: nothing answered on ${ports}. Check the host, the firewall and that coturn is running.` };
+}
+
+function turnSummary(server) {
+	return [
+		`UDP/TCP ${server.port}`,
+		server.tlsPort ? `TLS ${server.tlsPort}` : 'no TLS',
+		server.secret ? 'shared secret' : `user ${server.username}`,
+	].join(' · ');
+}
+
+const input = (name, value, props = {}) =>
+	h('input', { class: 'input', name, value: value ?? '', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', ...props });
+
+const field = (label, control, note) =>
+	h('label', { class: 'field' }, h('span', {}, label), control, note && h('small', {}, note));
+
 /** Settings screen: server profiles (select, test, add/edit/duplicate/delete) and JSON import/export. */
 export class SettingsView {
-	constructor(el, { onClose, sessionProfile }) {
+	constructor(el, { onClose, sessionProfile, ice = null }) {
 		this.el = el;
 		this.onClose = onClose;
 		this.sessionProfile = sessionProfile;
+		this.ice = ice; // the session's IceConfig: which TURN credentials it uses
 		this.open = false;
 		this.dialog = null;
-		this.tests = new Map(); // profile id → { kind, text }
-		profiles.on('change', () => {
+		this.tests = new Map(); // profile id or TURN_TEST → { kind, text }
+		const rerender = () => {
 			if (this.open) this.render();
-		});
+		};
+		profiles.on('change', rerender);
+		turnSettings.on('change', rerender);
+		ice?.on('change', rerender);
 	}
 
 	show() {
@@ -75,6 +111,8 @@ export class SettingsView {
 					h('ul', { class: 'profiles' }, list.map(p => this.renderProfile(p, p.id === activeId, sameConnection(p, current)))),
 					button('Add server', 'plus', () => this.edit(null, {}), 'btn')),
 
+				this.renderTurn(),
+
 				h('section', { class: 'settings-section' },
 					h('h2', {}, 'This device'),
 					h('label', { class: 'field' },
@@ -93,7 +131,7 @@ export class SettingsView {
 
 				h('section', { class: 'settings-section' },
 					h('h2', {}, 'Backup'),
-					h('p', { class: 'hint' }, 'Move your servers to another device without pairing.'),
+					h('p', { class: 'hint' }, 'Move your servers and TURN settings to another device without pairing.'),
 					h('div', { class: 'actions start' },
 						button('Export', 'download', () => this.exportProfiles(), 'btn'),
 						button('Import', 'upload', () => this.importProfiles(), 'btn')))));
@@ -137,11 +175,6 @@ export class SettingsView {
 
 	/** Editor dialog. `id` null adds a new profile prefilled from `base`. */
 	edit(id, base) {
-		const input = (name, value, props = {}) =>
-			h('input', { class: 'input', name, value: value ?? '', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', ...props });
-		const field = (label, control, note) =>
-			h('label', { class: 'field' }, h('span', {}, label), control, note && h('small', {}, note));
-
 		const warn = h('p', { class: 'warn-text', hidden: true }, 'This page is served over HTTPS, so the browser will block an insecure server (except localhost).');
 		const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
 		const result = h('p', { class: 'test-result', role: 'status', hidden: true });
@@ -237,18 +270,174 @@ export class SettingsView {
 		updateWarn();
 	}
 
+	renderTurn() {
+		const server = turnSettings.server;
+		const test = this.tests.get(TURN_TEST);
+		const source = this.ice?.source;
+		return h('section', { class: 'settings-section' },
+			h('h2', {}, 'TURN server'),
+			h('p', { class: 'hint' },
+				'Relays the connection when the devices can’t reach each other directly, e.g. on mobile data or strict Wi-Fi. ',
+				'This device uses it in every session, with any signaling server. ',
+				h('a', { href: 'docs/turn-server.md', target: '_blank', rel: 'noopener' }, 'Server setup guide')),
+			server
+				? h('div', { class: 'profile turn' },
+					h('span', { class: 'profile-text' },
+						h('span', { class: 'profile-name' }, h('span', {}, server.host), source === 'own' && h('span', { class: 'badge' }, 'This session')),
+						h('span', { class: 'profile-addr' }, turnSummary(server))),
+					server.secret && !canMint() && h('p', { class: 'warn-text' }, 'This page isn’t served over HTTPS, so the secret can’t be used here.'),
+					h('div', { class: 'profile-actions' },
+						button('Test', null, () => this.testTurn(server)),
+						button('Edit', null, () => this.editTurn(server)),
+						button('Remove', null, () => this.removeTurn())),
+					test && h('p', { class: 'test-result', 'data-kind': test.kind, role: 'status' }, test.text))
+				: button('Add TURN server', 'plus', () => this.editTurn(null), 'btn'),
+			source === 'host' && h('p', { class: 'hint' }, 'This session uses temporary TURN credentials from the host.'),
+			h('label', { class: 'check' },
+				h('input', { type: 'checkbox', checked: turnSettings.relayOnly, onchange: e => this.attempt(() => turnSettings.setRelayOnly(e.target.checked)) }),
+				h('span', {}, 'Relay only (for testing)')),
+			h('p', { class: 'hint' }, 'Sends new connections through the TURN server even when a direct route exists. Has no effect without TURN credentials.'));
+	}
+
+	async testTurn(server) {
+		if (this.tests.get(TURN_TEST)?.kind === 'busy') return;
+		this.tests.set(TURN_TEST, { kind: 'busy', text: 'Testing…' });
+		this.render();
+		const result = describeTurnTest(await testTurn(server), server);
+		// The server may have been edited or removed meanwhile.
+		if (this.tests.get(TURN_TEST)?.kind !== 'busy') return;
+		this.tests.set(TURN_TEST, result);
+		if (this.open) this.render();
+	}
+
+	removeTurn() {
+		if (!confirm('Remove the TURN server from this device?')) return;
+		this.attempt(() => {
+			this.tests.delete(TURN_TEST);
+			turnSettings.remove();
+			toast('TURN server removed');
+		});
+	}
+
+	/** TURN editor dialog; `base` is the saved server or null. */
+	editTurn(base) {
+		const secretMode = h('input', { type: 'radio', name: 'auth', value: 'secret', checked: !base?.username });
+		const passwordMode = h('input', { type: 'radio', name: 'auth', value: 'password', checked: Boolean(base?.username) });
+		const secretField = field('Secret', input('secret', base?.secret, { type: 'password', placeholder: 'static-auth-secret' }),
+			'Stays on this device. Pairing links carry temporary credentials made from it.');
+		const showSecret = h('label', { class: 'check' },
+			h('input', { type: 'checkbox', onchange: e => (get('secret').type = e.target.checked ? 'text' : 'password') }),
+			h('span', {}, 'Show secret'));
+		const userField = field('Username', input('username', base?.username));
+		const passwordField = field('Password', input('credential', base?.credential, { type: 'password' }),
+			'Goes into pairing links as it is, so every guest can use it.');
+		const insecure = h('p', { class: 'warn-text', hidden: true }, 'This page isn’t served over HTTPS, so a shared secret can’t be used here.');
+		const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
+		const result = h('p', { class: 'test-result', role: 'status', hidden: true });
+
+		const form = h('form', { class: 'sheet-body', novalidate: true },
+			h('h2', {}, base ? 'Edit TURN server' : 'Add TURN server'),
+			field('Host', input('host', base?.host, { placeholder: 'turn.example.com', inputmode: 'url' }), 'You can paste a turn: or turns: URL.'),
+			h('div', { class: 'field-row' },
+				field('Port', input('port', base?.port ?? TURN_PORT, { type: 'number', inputmode: 'numeric', min: 1, max: 65535, placeholder: String(TURN_PORT) }), 'UDP and TCP'),
+				field('TLS port', input('tlsPort', base ? base.tlsPort : TLS_PORT, { type: 'number', inputmode: 'numeric', min: 1, max: 65535, placeholder: 'Off' }), 'Empty: no TLS')),
+			h('div', { class: 'field', role: 'radiogroup', 'aria-label': 'Authentication' },
+				h('span', {}, 'Authentication'),
+				h('label', { class: 'check' }, secretMode, h('span', {}, 'Shared secret (coturn use-auth-secret)')),
+				h('label', { class: 'check' }, passwordMode, h('span', {}, 'Username and password'))),
+			secretField,
+			showSecret,
+			userField,
+			passwordField,
+			insecure,
+			error,
+			result,
+			h('div', { class: 'actions end' },
+				button('Test', null, () => test(), 'btn push'),
+				button('Cancel', null, () => dialog.close(), 'btn ghost'),
+				h('button', { type: 'submit', class: 'btn primary' }, 'Save')));
+
+		const dialog = this.openDialog(form);
+		const get = name => form.elements.namedItem(name);
+		const usesSecret = () => secretMode.checked;
+		const updateMode = () => {
+			secretField.hidden = showSecret.hidden = !usesSecret();
+			userField.hidden = passwordField.hidden = usesSecret();
+			insecure.hidden = !usesSecret() || canMint();
+		};
+		const fields = () => ({
+			host: get('host').value,
+			port: get('port').value,
+			tlsPort: get('tlsPort').value,
+			...(usesSecret() ? { secret: get('secret').value } : { username: get('username').value, credential: get('credential').value }),
+		});
+		const showError = message => {
+			error.textContent = message;
+			error.hidden = !message;
+		};
+		const validate = () => {
+			splitTurnHost(get);
+			showError('');
+			try {
+				return normalizeTurn(fields());
+			} catch (err) {
+				if (!(err instanceof TurnError)) throw err;
+				showError(err.message);
+				return null;
+			}
+		};
+
+		let testing = false;
+		const test = async () => {
+			const server = validate();
+			if (!server || testing) return;
+			testing = true;
+			result.hidden = false;
+			result.dataset.kind = 'busy';
+			result.textContent = 'Testing…';
+			const outcome = describeTurnTest(await testTurn(server), server);
+			testing = false;
+			result.dataset.kind = outcome.kind;
+			result.textContent = outcome.text;
+		};
+
+		secretMode.addEventListener('change', updateMode);
+		passwordMode.addEventListener('change', updateMode);
+		get('host').addEventListener('change', () => splitTurnHost(get));
+		form.addEventListener('input', () => {
+			if (!testing) result.hidden = true; // the result no longer matches the fields
+		});
+		form.addEventListener('submit', e => {
+			e.preventDefault();
+			const server = validate();
+			if (!server) return;
+			try {
+				turnSettings.save(server);
+				this.tests.delete(TURN_TEST);
+				dialog.close();
+				toast(base ? 'TURN server updated' : 'TURN server added');
+			} catch (err) {
+				if (!(err instanceof TurnError)) throw err;
+				showError(err.message);
+			}
+		});
+		updateMode();
+	}
+
 	exportProfiles() {
-		if (profiles.list().length < 2) {
+		const turn = turnSettings.server;
+		if (profiles.list().length < 2 && !turn) {
 			toast('Nothing to export yet. Add a server first.');
 			return;
 		}
-		const json = profiles.exportJSON();
+		const json = profiles.exportJSON({ turn: turn ?? undefined });
 		const area = h('textarea', { class: 'input code', rows: 8, readonly: true, 'aria-label': 'Exported servers' });
 		area.value = json;
 		area.addEventListener('focus', () => area.select());
 		const dialog = this.openDialog(h('div', { class: 'sheet-body' },
 			h('h2', {}, 'Export servers'),
 			h('p', { class: 'hint' }, 'Copy this text and paste it into Settings → Import on the other device.'),
+			turn?.secret && h('p', { class: 'warn-text' }, 'It includes your TURN secret. Send it only to your own devices.'),
 			area,
 			h('div', { class: 'actions end' },
 				navigator.share && button('Share…', 'share', () => navigator.share({ title: 'PeerKit servers', text: json }).catch(() => {}), 'btn push'),
@@ -261,7 +450,7 @@ export class SettingsView {
 		const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
 		const form = h('form', { class: 'sheet-body' },
 			h('h2', {}, 'Import servers'),
-			h('p', { class: 'hint' }, 'Servers that are already saved are skipped. A PeerKit link with a custom server works too.'),
+			h('p', { class: 'hint' }, 'Servers that are already saved are skipped. A TURN server in the text replaces this device’s. A PeerKit link with a custom server works too.'),
 			area,
 			error,
 			h('div', { class: 'actions end' },
@@ -271,15 +460,25 @@ export class SettingsView {
 		form.addEventListener('submit', e => {
 			e.preventDefault();
 			try {
-				const { added, existing, invalid } = profiles.importText(area.value);
+				const { added, existing, invalid, turn } = profiles.importText(area.value);
+				let turnSaved = false;
+				if (turn) {
+					try {
+						turnSettings.save(turn);
+						turnSaved = true;
+					} catch (err) {
+						if (!(err instanceof TurnError)) throw err;
+					}
+				}
 				dialog.close();
 				toast([
-					`Added ${added} server${added === 1 ? '' : 's'}`,
+					(added || existing || invalid || !turn) && `Added ${added} server${added === 1 ? '' : 's'}`,
 					existing && `${existing} already saved`,
 					invalid && `${invalid} invalid skipped`,
+					turn && (turnSaved ? 'TURN server imported' : 'TURN server invalid, skipped'),
 				].filter(Boolean).join(' · '));
 			} catch (err) {
-				if (!(err instanceof ProfileError)) throw err;
+				if (!(err instanceof ProfileError || err instanceof TurnError)) throw err;
 				error.textContent = err.message;
 				error.hidden = false;
 			}
@@ -306,7 +505,7 @@ export class SettingsView {
 		try {
 			fn();
 		} catch (err) {
-			if (!(err instanceof ProfileError)) throw err;
+			if (!(err instanceof ProfileError || err instanceof TurnError)) throw err;
 			toast(err.message);
 		}
 	}
@@ -329,4 +528,21 @@ function splitHostInput(get) {
 	if (url.port) get('port').value = url.port;
 	else if (scheme) get('port').value = get('secure').checked ? 443 : 80;
 	if (url.pathname !== '/') get('path').value = url.pathname;
+}
+
+/** Turn a pasted "turns:turn.example.com:5349?transport=tcp" into host and the matching port. */
+function splitTurnHost(get) {
+	const raw = get('host').value.trim();
+	const match = raw.match(/^(turns?|stuns?):([^:?/\s]+)(?::(\d{1,5}))?/i);
+	if (match) {
+		get('host').value = match[2];
+		if (match[3]) get(match[1].toLowerCase() === 'turns' ? 'tlsPort' : 'port').value = match[3];
+		return;
+	}
+	if (!/^[a-z]+:\/\//i.test(raw)) return;
+	try {
+		get('host').value = new URL(raw).hostname;
+	} catch {
+		// leave it for validation to report
+	}
 }
