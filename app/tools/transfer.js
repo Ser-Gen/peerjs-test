@@ -23,8 +23,8 @@ export default {
 	id: 'transfer',
 	title: 'Transfer',
 	supported: () => true,
-	mount(el, session) {
-		const tool = new TransferTool(el, session);
+	mount(el, session, ctx) {
+		const tool = new TransferTool(el, session, ctx);
 		return () => tool.destroy();
 	},
 };
@@ -47,8 +47,9 @@ class RateMeter {
 }
 
 class TransferTool {
-	constructor(root, session) {
+	constructor(root, session, ctx) {
 		this.session = session;
+		this.ctx = ctx;
 		this.nextId = 1;
 		this.outgoing = new Map();
 		this.incoming = new Map();
@@ -193,6 +194,7 @@ class TransferTool {
 		if (entry.count === parts) {
 			this.texts.delete(id);
 			this.addText(entry.parts.join(''), 'theirs');
+			this.ctx?.notify();
 		}
 	}
 
@@ -346,6 +348,7 @@ class TransferTool {
 		};
 		this.incoming.set(item.id, item);
 		this.createCard(item);
+		this.ctx?.notify();
 		this.session.send(CH.TRANSFER, { type: 'accept', id: item.id });
 		if (size === 0) this.finishIncoming(item);
 		else this.lock(item);

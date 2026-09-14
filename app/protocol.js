@@ -5,6 +5,7 @@ export const PROTOCOL_VERSION = 2;
 export const CH = {
 	SYS: 'sys', // pairing, ping / pong
 	TRANSFER: 'transfer', // text + file offers
+	STREAM: 'stream', // camera / screen start, stop, close (media itself goes over a peerjs call)
 };
 
 /*

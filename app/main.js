@@ -6,9 +6,10 @@ import { button, h, icon, openDialog, toast } from './ui/dom.js';
 import { PairView } from './ui/pair-view.js';
 import { SettingsView } from './ui/settings-view.js';
 import { claimTab } from './util.js';
+import stream from './tools/stream.js';
 import transfer from './tools/transfer.js';
 
-const TOOLS = [transfer].filter(tool => tool.supported());
+const TOOLS = [transfer, stream].filter(tool => tool.supported());
 
 // Retrying can't fix these.
 const FATAL_ERRORS = new Set(['bad-link', 'invalid-id', 'browser-incompatible']);
@@ -397,22 +398,27 @@ function applySettings() {
 function mountTools() {
 	if (toolsMounted) return;
 	toolsMounted = true;
-	const panels = TOOLS.map(tool => {
-		const panel = h('section', { class: 'tool', 'data-tool': tool.id });
-		els.toolHost.append(panel);
-		tool.mount(panel, session);
-		return panel;
-	});
-	if (TOOLS.length < 2) return;
-
+	const panels = TOOLS.map(tool => h('section', { class: 'tool', 'data-tool': tool.id }));
 	const tabs = TOOLS.map((tool, i) => h('button', { type: 'button', onclick: () => select(i) }, tool.title));
 	const select = index => {
 		panels.forEach((panel, i) => (panel.hidden = i !== index));
 		tabs.forEach((tab, i) => tab.setAttribute('aria-current', String(i === index)));
+		tabs[index].classList.remove('notify');
 	};
-	els.tabs.replaceChildren(...tabs);
-	tabsReady = true;
+	els.toolHost.append(...panels);
+	if (TOOLS.length > 1) {
+		els.tabs.replaceChildren(...tabs);
+		tabsReady = true;
+	}
 	select(0);
+	TOOLS.forEach((tool, i) => tool.mount(panels[i], session, {
+		/** Bring this tool to the front, e.g. when the other device starts a stream. */
+		activate: () => select(i),
+		/** Mark the tab when something arrived while another tool is shown. */
+		notify: () => {
+			if (panels[i].hidden) tabs[i].classList.add('notify');
+		},
+	}));
 }
 
 async function leave() {

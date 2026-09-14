@@ -1,6 +1,6 @@
 # PeerKit
 
-A mobile-first static web app for peer-to-peer tools built on peerjs (WebRTC). Two devices pair once (QR code, link, room code or recent host) and then use the tools over that session. So far the only tool is Transfer (text and files). Android Chrome and desktop browsers are the targets. The UI is in English.
+A mobile-first static web app for peer-to-peer tools built on peerjs (WebRTC). Two devices pair once (QR code, link, room code or recent host) and then use the tools over that session. Tools so far: Transfer (text and files) and Stream (camera and screen). Android Chrome and desktop browsers are the targets. The UI is in English.
 
 `PLAN.md` is the roadmap: vertical slices, each with a checklist the user ticks. When a slice is done, update its **As built** section.
 
@@ -20,6 +20,7 @@ app/rooms.js            room codes, trusted guests, recent hosts, link build/par
 app/device.js           per-browser device ID and name
 app/util.js             storage helpers, Web Locks, wake lock, formatting
 app/tools/transfer.js   text and chunked file transfer
+app/tools/stream.js     camera / screen over peerjs media calls
 app/ui/                 dom.js (h() builder, icons, dialogs, toasts), qr.js, pair-view.js, settings-view.js, styles.css
 vendor/                 peerjs 1.5.5 UMD (window.Peer), qrcode.js
 demos/                  the old standalone demos with their own old libraries; don't change them
@@ -52,6 +53,8 @@ There is no build step, no package.json and no test suite.
   - An approval prompt: anything else, e.g. a typed code from a new device.
   - Refused: automatic reconnects from a device the host disconnected on purpose (`_ended`).
 - **One tab per session:** enforced through Web Locks. A second tab can take the session over with `steal`.
+- **Tools:** a tool is `{ id, title, supported(), mount(el, session, ctx) → unmount }`, where `ctx = { activate(), notify() }`. Tools mount on the first connection and stay mounted through reconnects.
+- **Media:** calls go through the signaling server (`session.call`). Start, stop and close also go over the control channel, because peerjs closes a call only when ICE fails. A dropped link pauses a stream for 30 s and re-calls it with the same id.
 - **Protocol changes:** bump `PROTOCOL_VERSION` for incompatible message changes.
 - **Stored data:** localStorage data is versioned (`peerkit.settings`, `.rooms`, `.recent`, `.device`). Validate everything read from storage, links or the peer, because all of it is untrusted.
 - **Settings screen:** it is a history entry (`pushState`), so the Android back gesture closes it. Editors are modal `<dialog>`s.

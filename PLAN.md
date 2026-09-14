@@ -213,6 +213,15 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - The sender sees a small self-preview (muted, mirrored for the front camera), plus Stop and "You are sharing your screen" indicators.
 - Stream and file transfer run at the same time without breaking each other.
 
+**As built** (`app/tools/stream.js`)
+- A **Stream** tab next to Transfer. Each side can share one stream and view one, so both directions can run at once.
+- `start` / `stop` / `close` go over the control channel, because peerjs only closes a media call once ICE fails, which is slow. The media call carries `{id, kind}`, and the receiver answers without a stream.
+- The receiver switches to the Stream tab when a stream starts. The Transfer tab gets a dot for messages that arrive while it is hidden. Tools receive `ctx = {activate, notify}` in `mount`.
+- The receiver's buttons over the video: Mute, Picture-in-picture, Full screen and Close. Close asks the sender to stop. Full screen on a phone locks to landscape for landscape video.
+- The sender's bar: Switch camera (only with 2+ cameras; flips facing mode on phones, cycles devices on desktop), Mic, Resolution (`applyConstraints`, or a new track if that fails) and Stop. Resolution, mic and facing are remembered.
+- If the link drops, the capture keeps running for 30 s and is sent again on reconnect with the same id, so a screen share needs no new picker. After a reload or a longer drop, a "Resume" strip restarts it with one tap.
+- Receiving works on `http://<lan-ip>` too; sharing needs HTTPS. The camera falls back to video only when the mic is missing or blocked.
+
 **Checklist**
 - [ ] Phone → laptop: back camera appears on laptop; switch to front camera without the stream restarting.
 - [ ] Laptop receives muted; "Tap for sound" enables audio.
@@ -221,6 +230,9 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - [ ] Stop on the sender makes the receiver show "Stream ended"; starting again works without reload.
 - [ ] Send a file while a camera stream is running — both work.
 - [ ] Reload during a stream: session reconnects (Slice 3) and the stream can be restarted with one tap.
+- [ ] Turn phone Wi-Fi off/on for a few seconds while sharing its camera: the video comes back by itself.
+- [ ] Both directions at once: phone camera on the laptop and laptop screen on the phone.
+- [ ] "Close" on the receiver stops the sender's camera (the camera light goes off).
 
 ### Slice 5 — Record incoming stream
 

@@ -60,7 +60,7 @@ export function describeError(code) {
  * A host whose guest leaves goes back to waiting. A guest that was connected goes to
  * reconnecting and retries with backoff. failed carries an error code.
  *
- * Events: 'state' (state, error), 'rtt' (ms), 'binary' (ArrayBuffer), `msg:<ch>` (message),
+ * Events: 'state' (state, error), 'rtt' (ms), 'binary' (ArrayBuffer), `msg:<ch>` (message), 'call' (MediaConnection),
  * 'paired' (remote) on every link up, 'left' when the guest said bye (host),
  * 'approval' / 'approval-end' (request: {name, allow(), deny()}) for a device that needs the host's OK.
  */
@@ -206,6 +206,12 @@ export class Session extends Emitter {
 		return Math.min(DEFAULT_MESSAGE_SIZE, max > 0 ? max : DEFAULT_MESSAGE_SIZE);
 	}
 
+	/** Send a media stream to the paired device (peerjs MediaConnection). Null when that isn't possible now. */
+	call(stream, metadata) {
+		if (this.state !== 'connected' || !this.peer?.open || !this.remote) return null;
+		return this.peer.call(this.remote.peerId, stream, { metadata }) ?? null;
+	}
+
 	// --- peer / signaling ---
 
 	_createPeer() {
@@ -224,6 +230,11 @@ export class Session extends Emitter {
 		peer.on('connection', conn => {
 			if (peer === this.peer && this.role === 'host') this._onIncoming(conn);
 			else conn.close();
+		});
+		peer.on('call', call => {
+			// Media only from the paired device; the call can arrive just before the file link is up.
+			if (peer === this.peer && this.ctl && call.peer === this.remote?.peerId) this.emit('call', call);
+			else call.close();
 		});
 		peer.on('disconnected', () => {
 			if (peer === this.peer && this._opened && this.state !== 'failed') this._recoverSignaling();
