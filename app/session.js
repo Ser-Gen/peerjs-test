@@ -203,6 +203,11 @@ export class Session extends Emitter {
 		return this.file?.dataChannel?.bufferedAmount ?? 0;
 	}
 
+	/** Bytes waiting on the control connection; tools that send a lot through it pace themselves. */
+	get controlBuffered() {
+		return this.ctl?.dataChannel?.bufferedAmount ?? 0;
+	}
+
 	get maxMessageSize() {
 		const max = this.file?.peerConnection?.sctp?.maxMessageSize;
 		return Math.min(DEFAULT_MESSAGE_SIZE, max > 0 ? max : DEFAULT_MESSAGE_SIZE);

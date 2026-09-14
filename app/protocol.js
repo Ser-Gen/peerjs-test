@@ -1,11 +1,12 @@
 // Bump when messages change incompatibly; peers with different versions refuse to pair.
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 // Message channels on the control connection. Every message is `{ ch, type, ...payload }`.
 export const CH = {
 	SYS: 'sys', // pairing, ping / pong
 	TRANSFER: 'transfer', // text + file offers
 	STREAM: 'stream', // camera / screen start, stop, close (media itself goes over a peerjs call)
+	DOC: 'doc', // shared editor: Yjs sync and awareness (app/tools/editor/provider.js)
 };
 
 /*

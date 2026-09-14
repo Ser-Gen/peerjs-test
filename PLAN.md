@@ -285,13 +285,13 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - A guest that fails with "Direct connection failed" or "Connection timed out" and has no TURN credentials gets a hint and a "TURN settings" button.
 
 **Checklist**
-- [ ] `docs/turn-server.md` followed: Trickle ICE shows a `relay` candidate for `turn:` and for `turns:`.
-- [ ] Settings → Test TURN reports a relay with the right secret and a clear error with a wrong one.
-- [ ] Relay only on the laptop: pairing with the phone works; the status shows Relayed; Transfer and Stream work over it.
-- [ ] Phone on mobile data, laptop on home Wi-Fi, Relay only off: pairing works.
-- [ ] Decoding `r` from a pairing link shows temporary credentials and no secret.
-- [ ] A guest paired more than 24 h ago reconnects from Recent hosts.
-- [ ] Profiles without TURN behave exactly as before.
+- [x] `docs/turn-server.md` followed: Trickle ICE shows a `relay` candidate for `turn:` and for `turns:`.
+- [x] Settings → Test TURN reports a relay with the right secret and a clear error with a wrong one.
+- [x] Relay only on the laptop: pairing with the phone works; the status shows Relayed; Transfer and Stream work over it.
+- [x] Phone on mobile data, laptop on home Wi-Fi, Relay only off: pairing works.
+- [x] Decoding `r` from a pairing link shows temporary credentials and no secret.
+- [x] A guest paired more than 24 h ago reconnects from Recent hosts.
+- [x] Profiles without TURN behave exactly as before.
 
 ### Slice 6 — Shared editor
 

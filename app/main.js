@@ -7,10 +7,11 @@ import { button, h, icon, openDialog, toast } from './ui/dom.js';
 import { PairView } from './ui/pair-view.js';
 import { SettingsView } from './ui/settings-view.js';
 import { claimTab } from './util.js';
+import editor from './tools/editor/editor.js';
 import stream from './tools/stream.js';
 import transfer from './tools/transfer.js';
 
-const TOOLS = [transfer, stream].filter(tool => tool.supported());
+const TOOLS = [transfer, stream, editor].filter(tool => tool.supported());
 
 // Retrying can't fix these.
 const FATAL_ERRORS = new Set(['bad-link', 'invalid-id', 'browser-incompatible']);
@@ -462,11 +463,19 @@ function mountTools() {
 	toolsMounted = true;
 	const panels = TOOLS.map(tool => h('section', { class: 'tool', 'data-tool': tool.id }));
 	const tabs = TOOLS.map((tool, i) => h('button', { type: 'button', onclick: () => select(i) }, tool.title));
+	const showListeners = TOOLS.map(() => new Set());
 	const select = index => {
-		panels.forEach((panel, i) => (panel.hidden = i !== index));
+		panels.forEach((panel, i) => {
+			const hidden = i !== index;
+			if (panel.hidden === hidden) return;
+			panel.hidden = hidden;
+			if (!hidden) showListeners[i].forEach(fn => fn());
+		});
 		tabs.forEach((tab, i) => tab.setAttribute('aria-current', String(i === index)));
 		tabs[index].classList.remove('notify');
 	};
+	// Tools that keep data per room (the editor's documents) key it by code and server, the same on both devices.
+	const room = `${code}@${serverKey(profile)}`;
 	els.toolHost.append(...panels);
 	if (TOOLS.length > 1) {
 		els.tabs.replaceChildren(...tabs);
@@ -474,11 +483,18 @@ function mountTools() {
 	}
 	select(0);
 	TOOLS.forEach((tool, i) => tool.mount(panels[i], session, {
+		room,
 		/** Bring this tool to the front, e.g. when the other device starts a stream. */
 		activate: () => select(i),
 		/** Mark the tab when something arrived while another tool is shown. */
 		notify: () => {
 			if (panels[i].hidden) tabs[i].classList.add('notify');
+		},
+		visible: () => !panels[i].hidden,
+		/** Called each time the tool's tab is opened; returns an unsubscribe function. */
+		onShow: fn => {
+			showListeners[i].add(fn);
+			return () => showListeners[i].delete(fn);
 		},
 	}));
 }
