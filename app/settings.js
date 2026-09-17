@@ -111,7 +111,7 @@ export function blockedAsMixedContent(p) {
 	return !p.secure && location.protocol === 'https:' && !/^(?:localhost|127(?:\.\d{1,3}){3})$/.test(p.host);
 }
 
-// --- link encoding: #join=<id>&s=<base64url(JSON)> with short keys and defaults left out ---
+// --- link encoding: #room=<code>&s=<base64url(JSON)> with short keys and defaults left out ---
 
 export function encodeProfile(p) {
 	const compact = { h: p.host };
@@ -334,7 +334,7 @@ function parseImport(input) {
 	}
 	const hash = trimmed.includes('#') ? new URLSearchParams(trimmed.slice(trimmed.indexOf('#') + 1)) : null;
 	if (hash?.has('s')) return { entries: [decodeProfile(hash.get('s'))], turn: null };
-	if (hash?.has('join')) throw new ProfileError('This link uses the public server, which is always available.');
+	if (hash?.has('room') || hash?.has('join')) throw new ProfileError('This link uses the public server, which is always available.');
 	throw new ProfileError('Paste exported servers (JSON) or a PeerKit link.');
 }
 

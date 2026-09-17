@@ -9,8 +9,8 @@ import { readJSON, writeJSON } from './util.js';
  * `use-auth-secret`, credentials follow the TURN REST format:
  *   username   = "<unix expiry>:pk"
  *   credential = base64(HMAC-SHA1(secret, username))
- * The secret never leaves the device it was entered on: links (`&r=`) and the welcome message carry
- * temporary credentials only.
+ * The secret never leaves the device it was entered on: links (`&r=`) and room messages carry temporary
+ * credentials only. Any member with a secret hands them out; the others keep the newest and pass them on.
  */
 
 const STORAGE_KEY = 'peerkit.turn';
@@ -19,7 +19,7 @@ export const TURN_PORT = 3478;
 export const TLS_PORT = 5349;
 const HOUR = 3600 * 1000;
 const OWN_TTL = 24 * HOUR; // what this device mints for its own connections
-const GUEST_TTL = 7 * 24 * HOUR; // what a host puts in links and sends to its guest
+const ROOM_TTL = 7 * 24 * HOUR; // what goes into links and to the other members
 const TEST_TIMEOUT = 8000;
 const USER_LABEL = 'pk';
 const VISIBLE_RE = /^[\x21-\x7e]{1,256}$/; // visible ASCII, no spaces
@@ -73,7 +73,7 @@ function text(value) {
 	return '';
 }
 
-/** Credentials a host handed out (link, welcome, recent host): never a secret, not expired. Null otherwise. */
+/** Credentials another member handed out (link, room message, stored room): never a secret, not expired. Null otherwise. */
 export function parseGuestTurn(raw) {
 	if (raw == null) return null;
 	try {
@@ -211,25 +211,29 @@ export const turnSettings = new TurnSettings();
  * Emits 'change' when the credentials in use or those for guests change.
  */
 export class IceConfig extends Emitter {
-	constructor({ role, base = null }) {
+	constructor({ base = null } = {}) {
 		super();
-		this.role = role;
 		this.base = base; // the server profile's own iceServers, if any
 		this.config = { iceServers: base ?? PEERJS_ICE, sdpSemantics: 'unified-plan' };
 		this.own = null; // credentials from this device's server
-		this.fromHost = null; // guest: temporary credentials from the link, a recent host or welcome
-		this.forGuests = null; // host: credentials to put in links and send with welcome
+		this.fromRoom = null; // temporary credentials from the link, the stored room or another member
+		this.minted = null; // from this device's server, for links and the other members
 		this._run = 0;
 		turnSettings.on('change', () => this.prepare());
 	}
 
-	/** The credentials connections use now. This device's own server wins over the host's. */
+	/** The credentials connections use now. This device's own server wins over the room's. */
 	get active() {
-		return this.own ?? this.fromHost;
+		return this.own ?? this.fromRoom;
 	}
 
 	get source() {
-		return this.own ? 'own' : this.fromHost ? 'host' : null;
+		return this.own ? 'own' : this.fromRoom ? 'room' : null;
+	}
+
+	/** Temporary credentials to put in links and send to members: our own, or the newest we were given. */
+	get forRoom() {
+		return this.minted ?? this.fromRoom;
 	}
 
 	/** Create credentials from the settings. Await it before the Peer is created. Never rejects. */
@@ -237,36 +241,43 @@ export class IceConfig extends Emitter {
 		const run = ++this._run;
 		const server = turnSettings.server;
 		let own = null;
-		let forGuests = null;
+		let minted = null;
 		if (server && (!server.secret || canMint())) {
 			try {
 				own = await credentialsFor(server, OWN_TTL);
-				if (this.role === 'host') forGuests = await credentialsFor(server, GUEST_TTL);
+				minted = await credentialsFor(server, ROOM_TTL); // a username and password are shared as they are
 			} catch (err) {
 				console.warn('[peerkit] could not create TURN credentials', err);
-				own = forGuests = null;
+				own = minted = null;
 			}
 		}
 		if (run !== this._run) return;
 		this.own = own;
-		this.forGuests = forGuests;
+		this.minted = minted;
 		this._apply();
 	}
 
-	/** Guest: take temporary credentials from the host. Expired or invalid ones are ignored. */
+	/**
+	 * Take temporary credentials from a link or another member. Expired ones are ignored, and so are ones
+	 * that expire sooner than those we have. Returns whether they were taken.
+	 */
 	adopt(turn) {
-		if (!turn || isExpired(turn) || sameTurn(turn, this.fromHost)) return;
-		this.fromHost = turn;
+		if (!turn || isExpired(turn) || sameTurn(turn, this.fromRoom)) return false;
+		const current = this.fromRoom && !isExpired(this.fromRoom) ? credentialExpiry(this.fromRoom) : null;
+		const next = credentialExpiry(turn);
+		if (current != null && (next == null || next <= current)) return false;
+		this.fromRoom = turn;
 		this._apply();
+		return true;
 	}
 
 	/** Replace credentials that expire soon. Cheap; call it on wake-up and now and then. */
 	refresh() {
 		const server = turnSettings.server;
 		// Links keep at least 6 of their 7 days.
-		if (server?.secret && (isExpired(this.own, OWN_TTL / 2) || isExpired(this.forGuests, GUEST_TTL - 24 * HOUR))) this.prepare();
-		if (this.fromHost && isExpired(this.fromHost)) {
-			this.fromHost = null;
+		if (server?.secret && (isExpired(this.own, OWN_TTL / 2) || isExpired(this.minted, ROOM_TTL - 24 * HOUR))) this.prepare();
+		if (this.fromRoom && isExpired(this.fromRoom)) {
+			this.fromRoom = null;
 			this._apply();
 		}
 	}

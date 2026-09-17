@@ -7,6 +7,11 @@ Third-party code, committed as ready-to-load files so the app itself has no buil
 | `peerjs.min.js` | peerjs UMD build, defines `window.Peer` | 1.5.5 | MIT |
 | `qrcode.js` | QRCode.js by davidshimjs, defines `window.QRCode` | — | MIT |
 | `editor.js` | Shared editor bundle (ES module): CodeMirror 6, Yjs, y-protocols, y-indexeddb, y-codemirror.next, VS Code keymap | pinned in `editor-src/package.json` | MIT; the comment at the top lists every bundled package with its version and licence |
+| `words.js` | BIP-39 English word list (2048 words) for room codes, as an ES module | from `@scure/bip39` 2.3.0 | MIT (header in the file) |
+
+## words.js
+
+Generated once from `wordlists/english.js` of `@scure/bip39` 2.3.0 (npm pack, not installed). The list must stay exactly as it is: room codes and the IDs derived from them depend on it, so changing a word breaks existing rooms.
 
 ## editor.js
 

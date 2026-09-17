@@ -10,21 +10,22 @@ const PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
 const FINAL = new Set(['delivered', 'received', 'cancelled', 'cancelled-remote', 'failed']);
 
 /*
- * Protocol (ch: 'transfer'):
+ * Protocol (ch: 'transfer'). Text goes to every member; a file goes to each member separately, over the
+ * link with that member, so each has its own offer, progress and outcome.
  *   text     {id, part, parts, text}      long text is split into parts
  *   offer    {id, name, size, mime}       sender → receiver
  *   accept   {id}                         receiver → sender; chunks start only after this
  *   complete {id}                         receiver → sender once all bytes arrived
  *   abort    {id, dir}                    dir is the aborting side's view: 'out' = its outgoing transfer
- * Ids are per sending side, so incoming and outgoing maps are separate.
+ * Ids are per sending device, so incoming items are keyed by sender and id.
  */
 
 export default {
 	id: 'transfer',
 	title: 'Transfer',
 	supported: () => true,
-	mount(el, session, ctx) {
-		const tool = new TransferTool(el, session, ctx);
+	mount(el, room, ctx) {
+		const tool = new TransferTool(el, room, ctx);
 		return () => tool.destroy();
 	},
 };
@@ -46,17 +47,17 @@ class RateMeter {
 	}
 }
 
+const inKey = (peerId, id) => `${peerId}:${id}`;
+
 class TransferTool {
-	constructor(root, session, ctx) {
-		this.session = session;
+	constructor(root, room, ctx) {
+		this.room = room;
 		this.ctx = ctx;
 		this.nextId = 1;
-		this.outgoing = new Map();
-		this.incoming = new Map();
+		this.outgoing = new Map(); // id → { id, name, size, mime, file, sends: Map(peerId → send), card }
+		this.incoming = new Map(); // `${peerId}:${id}` → item
 		this.texts = new Map();
-		this.queue = [];
-		this.pumping = false;
-		this.wasConnected = false;
+		this.queues = new Map(); // peerId → { sends: [], pumping }
 
 		this.fileInput = h('input', {
 			type: 'file',
@@ -77,12 +78,12 @@ class TransferTool {
 			onkeydown: e => this.onKey(e),
 			onpaste: e => this.onPaste(e),
 		});
-		this.sendBtn = h('button', { type: 'submit', class: 'icon-btn primary', title: 'Send', 'aria-label': 'Send' }, icon('send'));
+		this.sendBtn = h('button', { type: 'submit', class: 'icon-btn primary', title: 'Send to everyone', 'aria-label': 'Send to everyone' }, icon('send'));
 		this.form = h('form', { class: 'composer', onsubmit: e => { e.preventDefault(); this.sendText(); } },
 			this.fileInput, this.attachBtn, this.textarea, this.sendBtn);
 		this.empty = h('div', { class: 'feed-empty' },
-			h('p', {}, 'Send text, links or files to the other device.'),
-			h('p', { class: 'hint' }, 'Attach with the clip button, or paste or drop files here.'));
+			h('p', {}, 'Send text, links or files to everyone in the room.'),
+			h('p', { class: 'hint' }, 'Attach with the clip button, or paste or drop files here. Only members who are here now receive them.'));
 		this.feed = h('div', { class: 'feed', role: 'log', 'aria-live': 'polite' }, this.empty);
 		this.el = h('div', { class: 'transfer' }, this.feed, this.form);
 		root.append(this.el);
@@ -106,11 +107,13 @@ class TransferTool {
 		document.addEventListener('drop', this.onDrop);
 
 		this.unsubscribe = [
-			session.onMessage(CH.TRANSFER, msg => this.onMessage(msg)),
-			session.on('binary', data => this.onChunk(data)),
-			session.on('state', () => this.onState()),
+			room.on(`msg:${CH.TRANSFER}`, (msg, member) => this.onMessage(msg, member)),
+			room.on('binary', (data, member) => this.onChunk(data, member)),
+			room.on('link-up', member => this.addSystem(`${member.name} joined`)),
+			room.on('link-down', (member, reason) => this.onLinkDown(member, reason)),
+			room.on('members', () => this.renderComposer()),
 		];
-		this.onState();
+		this.renderComposer();
 	}
 
 	destroy() {
@@ -118,23 +121,28 @@ class TransferTool {
 		document.removeEventListener('dragover', this.onDragOver);
 		document.removeEventListener('dragleave', this.onDragLeave);
 		document.removeEventListener('drop', this.onDrop);
-		this.interruptAll();
+		for (const item of this.outgoing.values()) for (const send of item.sends.values()) this.stopSend(item, send, 'failed');
+		for (const item of this.incoming.values()) if (!FINAL.has(item.state)) this.stop(item, 'failed');
 		this.el.remove();
 	}
 
-	get connected() {
-		return this.session.state === 'connected';
+	renderComposer() {
+		const empty = this.room.members.length === 0;
+		this.sendBtn.disabled = this.attachBtn.disabled = empty;
+		this.textarea.placeholder = empty ? 'Nobody else is here yet' : 'Message or link';
 	}
 
-	onState() {
-		const connected = this.connected;
-		this.sendBtn.disabled = this.attachBtn.disabled = !connected;
-		if (connected && !this.wasConnected) this.addSystem(`Connected to ${this.session.remote?.name ?? 'device'}`);
-		if (!connected && this.wasConnected) {
-			this.addSystem('Disconnected');
-			this.interruptAll();
+	onLinkDown(member, reason) {
+		this.addSystem(reason === 'bye' ? `${member.name} left` : `Lost the connection to ${member.name}`);
+		for (const item of this.outgoing.values()) {
+			const send = item.sends.get(member.peerId);
+			if (send && !FINAL.has(send.state)) this.stopSend(item, send, 'failed');
 		}
-		this.wasConnected = connected;
+		for (const item of this.incoming.values()) {
+			if (item.from.peerId === member.peerId && !FINAL.has(item.state)) this.stop(item, 'failed');
+		}
+		for (const key of [...this.texts.keys()]) if (key.startsWith(`${member.peerId}:`)) this.texts.delete(key);
+		this.queues.delete(member.peerId);
 	}
 
 	// --- composer ---
@@ -160,9 +168,9 @@ class TransferTool {
 		ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
 	}
 
-	requireConnection() {
-		if (this.connected) return true;
-		toast('Not connected');
+	requireMembers() {
+		if (this.room.members.length) return true;
+		toast('Nobody else is in the room');
 		return false;
 	}
 
@@ -170,35 +178,36 @@ class TransferTool {
 
 	sendText() {
 		const text = this.textarea.value;
-		if (!text.trim() || !this.requireConnection()) return;
+		if (!text.trim() || !this.requireMembers()) return;
 		const id = this.nextId++;
 		const parts = Math.ceil(text.length / TEXT_PART_CHARS);
 		for (let part = 0; part < parts; part++) {
 			const slice = text.slice(part * TEXT_PART_CHARS, (part + 1) * TEXT_PART_CHARS);
-			this.session.send(CH.TRANSFER, { type: 'text', id, part, parts, text: slice });
+			this.room.send(CH.TRANSFER, { type: 'text', id, part, parts, text: slice });
 		}
 		this.addText(text, 'mine');
 		this.textarea.value = '';
 		this.autosize();
 	}
 
-	onTextPart(msg) {
+	onTextPart(msg, member) {
 		const { id, part, parts } = msg;
 		if (!Number.isInteger(parts) || parts < 1 || parts > 10000 || !Number.isInteger(part) || part < 0 || part >= parts) return;
-		let entry = this.texts.get(id);
-		if (!entry || part === 0) this.texts.set(id, (entry = { parts: new Array(parts), count: 0 }));
+		const key = inKey(member.peerId, id);
+		let entry = this.texts.get(key);
+		if (!entry || part === 0) this.texts.set(key, (entry = { parts: new Array(parts), count: 0 }));
 		if (entry.parts[part] === undefined) {
 			entry.parts[part] = String(msg.text ?? '');
 			entry.count++;
 		}
 		if (entry.count === parts) {
-			this.texts.delete(id);
-			this.addText(entry.parts.join(''), 'theirs');
+			this.texts.delete(key);
+			this.addText(entry.parts.join(''), 'theirs', member);
 			this.ctx?.notify();
 		}
 	}
 
-	addText(text, side) {
+	addText(text, side, from = null) {
 		const copy = h('button', {
 			type: 'button',
 			class: 'icon-btn small',
@@ -208,6 +217,7 @@ class TransferTool {
 		}, icon('copy'));
 		this.append(h('div', { class: `msg ${side}` },
 			h('div', { class: 'bubble' },
+				from && sender(from),
 				h('div', { class: 'text' }, linkify(text)),
 				h('div', { class: 'meta' }, h('time', {}, timeLabel()), copy))));
 	}
@@ -226,116 +236,151 @@ class TransferTool {
 
 	// --- messages ---
 
-	onMessage(msg) {
+	onMessage(msg, member) {
 		switch (msg.type) {
 			case 'text':
-				return this.onTextPart(msg);
+				return this.onTextPart(msg, member);
 			case 'offer':
-				return this.onOffer(msg);
+				return this.onOffer(msg, member);
 			case 'accept':
-				return this.outgoing.get(msg.id)?.onAccept?.();
+				return this.outgoing.get(msg.id)?.sends.get(member.peerId)?.onAccept?.();
 			case 'complete': {
 				const item = this.outgoing.get(msg.id);
-				if (item && (item.state === 'sending' || item.state === 'finishing')) this.setState(item, 'delivered');
+				const send = item?.sends.get(member.peerId);
+				if (send && (send.state === 'sending' || send.state === 'finishing')) this.setSendState(item, send, 'delivered');
 				return;
 			}
 			case 'abort': {
-				const item = (msg.dir === 'out' ? this.incoming : this.outgoing).get(msg.id);
-				if (item && !FINAL.has(item.state)) this.stop(item, 'cancelled-remote');
-				return;
+				if (msg.dir === 'out') {
+					const item = this.incoming.get(inKey(member.peerId, msg.id));
+					if (item && !FINAL.has(item.state)) this.stop(item, 'cancelled-remote');
+				} else {
+					const item = this.outgoing.get(msg.id);
+					const send = item?.sends.get(member.peerId);
+					if (send && !FINAL.has(send.state)) this.stopSend(item, send, 'cancelled-remote');
+				}
 			}
 		}
 	}
 
-	// --- outgoing files ---
+	// --- outgoing files: one send per member ---
 
 	sendFiles(files) {
-		if (!files.length || !this.requireConnection()) return;
+		if (!files.length || !this.requireMembers()) return;
+		const members = this.room.members;
 		for (const file of files) {
-			const item = {
-				dir: 'out',
-				id: this.nextId++,
-				name: file.name || 'file',
-				size: file.size,
-				mime: file.type,
-				file,
-				done: 0,
-				state: 'queued',
-				meter: new RateMeter(),
-			};
+			const item = { id: this.nextId++, name: file.name || 'file', size: file.size, mime: file.type, file, sends: new Map() };
+			for (const member of members) {
+				item.sends.set(member.peerId, { member, state: 'queued', done: 0, meter: new RateMeter(), locked: false });
+			}
 			this.outgoing.set(item.id, item);
-			this.queue.push(item);
-			this.createCard(item);
+			this.createOutCard(item);
+			for (const send of item.sends.values()) this.queueFor(send.member.peerId).sends.push([item, send]);
 		}
-		this.pump();
+		for (const member of members) this.pump(member.peerId);
 	}
 
-	async pump() {
-		if (this.pumping) return;
-		this.pumping = true;
+	queueFor(peerId) {
+		if (!this.queues.has(peerId)) this.queues.set(peerId, { sends: [], pumping: false });
+		return this.queues.get(peerId);
+	}
+
+	/** One file at a time per member; members are served in parallel over their own links. */
+	async pump(peerId) {
+		const queue = this.queueFor(peerId);
+		if (queue.pumping) return;
+		queue.pumping = true;
 		try {
-			while (this.queue.length) {
-				const item = this.queue.shift();
-				if (item.state === 'queued') await this.sendFile(item);
+			while (queue.sends.length) {
+				const [item, send] = queue.sends.shift();
+				if (send.state === 'queued') await this.sendFile(item, send);
 			}
 		} finally {
-			this.pumping = false;
+			queue.pumping = false;
 		}
 	}
 
-	async sendFile(item) {
-		const { session } = this;
+	async sendFile(item, send) {
+		const { room } = this;
+		const to = send.member.peerId;
 		const accepted = new Promise(resolve => {
-			item.onAccept = () => resolve(true);
-			item.onStop = () => resolve(false);
+			send.onAccept = () => resolve(true);
+			send.onStop = () => resolve(false);
 		});
-		this.setState(item, 'offered');
-		session.send(CH.TRANSFER, { type: 'offer', id: item.id, name: item.name, size: item.size, mime: item.mime });
-		if (!(await accepted) || item.state !== 'offered') return;
+		this.setSendState(item, send, 'offered');
+		if (!room.send(CH.TRANSFER, { type: 'offer', id: item.id, name: item.name, size: item.size, mime: item.mime }, to)) {
+			this.stopSend(item, send, 'failed');
+			return;
+		}
+		if (!(await accepted) || send.state !== 'offered') return;
 
-		this.setState(item, 'sending');
-		this.lock(item);
+		this.setSendState(item, send, 'sending');
+		this.lock(send);
 		try {
-			const chunkSize = session.maxMessageSize - HEADER_BYTES;
+			const chunkSize = room.maxMessageSize(to) - HEADER_BYTES;
 			let offset = 0;
 			while (offset < item.size) {
 				// Read one slice at a time: the file is never fully loaded into memory.
 				const buf = await item.file.slice(offset, offset + chunkSize).arrayBuffer();
-				if (item.state !== 'sending') return;
+				if (send.state !== 'sending') return;
 				const frame = new Uint8Array(HEADER_BYTES + buf.byteLength);
 				new DataView(frame.buffer).setUint32(0, item.id);
 				frame.set(new Uint8Array(buf), HEADER_BYTES);
-				await session.sendBinary(frame);
-				if (item.state !== 'sending') return;
+				await room.sendBinary(to, frame);
+				if (send.state !== 'sending') return;
 				offset += buf.byteLength;
-				item.done = offset;
+				send.done = offset;
 				this.progress(item);
 			}
-			if (item.state === 'sending') this.setState(item, 'finishing');
+			if (send.state === 'sending') this.setSendState(item, send, 'finishing');
 		} catch (err) {
-			if (item.state !== 'sending') return;
+			if (send.state !== 'sending') return;
 			const readError = err instanceof DOMException && err.name !== 'NetworkError' ? err : null;
-			if (readError && this.connected) {
+			if (readError) {
 				item.error = 'Could not read the file';
-				session.send(CH.TRANSFER, { type: 'abort', id: item.id, dir: 'out' });
+				room.send(CH.TRANSFER, { type: 'abort', id: item.id, dir: 'out' }, to);
 			}
-			this.stop(item, 'failed');
+			this.stopSend(item, send, 'failed');
 		} finally {
-			this.unlock(item);
+			this.unlock(send);
 		}
+	}
+
+	cancelOutgoing(item) {
+		for (const send of item.sends.values()) {
+			if (FINAL.has(send.state)) continue;
+			const notify = send.state !== 'queued';
+			this.stopSend(item, send, 'cancelled');
+			if (notify) this.room.send(CH.TRANSFER, { type: 'abort', id: item.id, dir: 'out' }, send.member.peerId);
+		}
+	}
+
+	stopSend(item, send, state) {
+		this.setSendState(item, send, state);
+		this.unlock(send);
+		send.onStop?.();
+	}
+
+	setSendState(item, send, state) {
+		send.state = state;
+		if (state === 'sending') send.startedAt = performance.now();
+		if (state === 'delivered') send.endedAt = performance.now();
+		this.renderOutCard(item);
 	}
 
 	// --- incoming files ---
 
-	onOffer(msg) {
+	onOffer(msg, member) {
 		const size = Number(msg.size);
 		if (!Number.isInteger(msg.id) || msg.id < 0 || msg.id > 0xffffffff || !Number.isSafeInteger(size) || size < 0) return;
-		const previous = this.incoming.get(msg.id);
+		const key = inKey(member.peerId, msg.id);
+		const previous = this.incoming.get(key);
 		if (previous && !FINAL.has(previous.state)) this.stop(previous, 'failed');
 
 		const item = {
-			dir: 'in',
+			key,
 			id: msg.id,
+			from: member,
 			name: String(msg.name || 'file').slice(0, 255),
 			size,
 			mime: typeof msg.mime === 'string' ? msg.mime : '',
@@ -345,18 +390,19 @@ class TransferTool {
 			partsBytes: 0,
 			blobs: [],
 			meter: new RateMeter(),
+			locked: false,
 		};
-		this.incoming.set(item.id, item);
-		this.createCard(item);
+		this.incoming.set(key, item);
+		this.createInCard(item);
 		this.ctx?.notify();
-		this.session.send(CH.TRANSFER, { type: 'accept', id: item.id });
+		this.room.send(CH.TRANSFER, { type: 'accept', id: item.id }, member.peerId);
 		if (size === 0) this.finishIncoming(item);
 		else this.lock(item);
 	}
 
-	onChunk(data) {
+	onChunk(data, member) {
 		if (!(data instanceof ArrayBuffer) || data.byteLength < HEADER_BYTES) return;
-		const item = this.incoming.get(new DataView(data).getUint32(0));
+		const item = this.incoming.get(inKey(member.peerId, new DataView(data).getUint32(0)));
 		if (!item || item.state !== 'receiving') return;
 		const bytes = new Uint8Array(data, HEADER_BYTES);
 		item.parts.push(bytes);
@@ -368,7 +414,7 @@ class TransferTool {
 			item.partsBytes = 0;
 		}
 		if (item.done >= item.size) this.finishIncoming(item);
-		else this.progress(item);
+		else this.progressIn(item);
 	}
 
 	finishIncoming(item) {
@@ -376,56 +422,53 @@ class TransferTool {
 		item.blobs = item.parts = null;
 		this.unlock(item);
 		this.setState(item, 'received');
-		this.session.send(CH.TRANSFER, { type: 'complete', id: item.id });
+		this.room.send(CH.TRANSFER, { type: 'complete', id: item.id }, item.from.peerId);
 	}
 
-	// --- lifecycle ---
-
-	cancel(item) {
+	cancelIncoming(item) {
 		if (FINAL.has(item.state)) return;
-		const notify = item.dir === 'in' || item.state !== 'queued';
 		this.stop(item, 'cancelled');
-		if (notify && this.connected) this.session.send(CH.TRANSFER, { type: 'abort', id: item.id, dir: item.dir });
+		this.room.send(CH.TRANSFER, { type: 'abort', id: item.id, dir: 'in' }, item.from.peerId);
 	}
 
 	stop(item, state) {
 		this.setState(item, state);
 		this.unlock(item);
-		item.onStop?.();
-		if (item.dir === 'in') item.parts = item.blobs = null;
+		item.parts = item.blobs = null;
 	}
 
-	interruptAll() {
-		for (const item of [...this.outgoing.values(), ...this.incoming.values()]) {
-			if (!FINAL.has(item.state)) this.stop(item, 'failed');
-		}
-		this.queue = [];
-		this.texts.clear();
+	setState(item, state) {
+		item.state = state;
+		if (state === 'receiving') item.startedAt = performance.now();
+		if (state === 'received') item.endedAt = performance.now();
+		this.renderInCard(item);
 	}
 
-	lock(item) {
-		if (item.locked) return;
-		item.locked = true;
+	lock(holder) {
+		if (holder.locked) return;
+		holder.locked = true;
 		wakeLock.acquire();
 	}
 
-	unlock(item) {
-		if (!item.locked) return;
-		item.locked = false;
+	unlock(holder) {
+		if (!holder.locked) return;
+		holder.locked = false;
 		wakeLock.release();
 	}
 
 	// --- rendering ---
 
-	createCard(item) {
-		const card = (item.card = {
+	baseCard(item, side, from = null) {
+		const card = {
 			bar: h('progress', { max: 1, value: 0 }),
 			status: h('div', { class: 'file-status' }),
 			actions: h('div', { class: 'file-actions' }),
+			details: h('ul', { class: 'file-recipients', hidden: true }),
 			preview: h('div', { class: 'file-preview', hidden: true }),
-		});
-		card.root = h('div', { class: `msg ${item.dir === 'out' ? 'mine' : 'theirs'}` },
+		};
+		card.root = h('div', { class: `msg ${side}` },
 			h('div', { class: 'bubble file' },
+				from && sender(from),
 				h('div', { class: 'file-head' },
 					icon('file'),
 					h('div', { class: 'file-title' },
@@ -433,28 +476,50 @@ class TransferTool {
 						h('div', { class: 'file-size' }, formatBytes(item.size)))),
 				card.preview,
 				card.bar,
+				card.details,
 				h('div', { class: 'file-foot' }, card.status, card.actions)));
-		this.append(card.root);
-		this.renderCard(item);
+		return card;
 	}
 
-	setState(item, state) {
-		item.state = state;
-		if (state === 'sending' || state === 'receiving') item.startedAt = performance.now();
-		if (state === 'delivered' || state === 'received') item.endedAt = performance.now();
-		this.renderCard(item);
+	createOutCard(item) {
+		item.card = this.baseCard(item, 'mine');
+		this.append(item.card.root);
+		this.renderOutCard(item);
 	}
 
-	renderCard(item) {
+	createInCard(item) {
+		item.card = this.baseCard(item, 'theirs', item.from);
+		this.append(item.card.root);
+		this.renderInCard(item);
+	}
+
+	renderOutCard(item) {
+		const { card } = item;
+		const sends = [...item.sends.values()];
+		const active = sends.filter(send => !FINAL.has(send.state));
+		card.root.dataset.state = active.length ? 'sending' : sends.some(send => send.state === 'delivered') ? 'delivered' : 'failed';
+		card.bar.hidden = !sends.some(send => send.state === 'sending' || send.state === 'finishing');
+		card.actions.replaceChildren();
+		if (active.some(send => send.state !== 'finishing')) card.actions.append(button('Cancel', 'close', () => this.cancelOutgoing(item)));
+		// With several recipients, each one's progress on its own line.
+		card.details.hidden = sends.length < 2;
+		if (sends.length > 1) {
+			card.details.replaceChildren(...sends.map(send => {
+				send.line ??= h('span', { class: 'file-recipient-status' });
+				return h('li', {}, h('span', { class: 'file-recipient-name' }, send.member.name), send.line);
+			}));
+		}
+		this.progress(item, true);
+	}
+
+	renderInCard(item) {
 		const { card, state } = item;
 		card.root.dataset.state = state;
-		card.bar.hidden = !['sending', 'receiving', 'finishing'].includes(state);
+		card.bar.hidden = state !== 'receiving';
 		card.actions.replaceChildren();
-		if (!FINAL.has(state) && state !== 'finishing') {
-			card.actions.append(button('Cancel', 'close', () => this.cancel(item)));
-		}
+		if (!FINAL.has(state)) card.actions.append(button('Cancel', 'close', () => this.cancelIncoming(item)));
 		if (state === 'received') this.renderReceived(item);
-		this.progress(item, true);
+		this.progressIn(item, true);
 	}
 
 	renderReceived(item) {
@@ -473,46 +538,95 @@ class TransferTool {
 
 	progress(item, force = false) {
 		const now = performance.now();
-		// Bytes still in the channel buffer haven't left this device yet.
-		const sent = item.dir === 'out' ? Math.max(0, item.done - this.session.bufferedAmount) : item.done;
-		if (item.state === 'sending' || item.state === 'receiving') item.meter.add(sent);
+		const sends = [...item.sends.values()];
+		for (const send of sends) {
+			// Bytes still in the channel buffer haven't left this device yet.
+			send.sent = Math.max(0, send.done - this.room.bufferedAmount(send.member.peerId));
+			if (send.state === 'sending') send.meter.add(send.sent);
+		}
 		if (!force && now - (item.uiAt ?? 0) < UI_INTERVAL) return;
 		item.uiAt = now;
-		item.card.bar.value = item.size ? sent / item.size : 1;
-		item.card.status.textContent = this.statusText(item, sent);
+		const total = item.size * sends.length;
+		const sent = sends.reduce((sum, send) => sum + (send.state === 'delivered' ? item.size : send.sent), 0);
+		item.card.bar.value = total ? sent / total : 1;
+		item.card.status.textContent = this.outStatus(item, sends);
+		if (sends.length > 1) for (const send of sends) send.line.textContent = this.sendStatus(item, send);
 	}
 
-	statusText(item, sent) {
-		switch (item.state) {
+	outStatus(item, sends) {
+		if (sends.length === 1) return this.sendStatus(item, sends[0]);
+		const delivered = sends.filter(send => send.state === 'delivered').length;
+		const active = sends.filter(send => !FINAL.has(send.state));
+		if (active.length) {
+			const rate = sends.reduce((sum, send) => sum + (send.state === 'sending' ? send.meter.rate : 0), 0);
+			return [`Sending to ${active.length}`, delivered && `${delivered} delivered`, rate > 0 && formatSpeed(rate)].filter(Boolean).join(' · ');
+		}
+		if (delivered === sends.length) return `Delivered to all ${sends.length}`;
+		if (sends.every(send => send.state === 'cancelled')) return 'Cancelled';
+		return `Delivered to ${delivered} of ${sends.length}`;
+	}
+
+	sendStatus(item, send) {
+		switch (send.state) {
 			case 'queued':
 				return 'Queued';
 			case 'offered':
-				return 'Waiting for the other device…';
-			case 'sending':
-			case 'receiving': {
-				const parts = [`${item.size ? Math.floor((sent / item.size) * 100) : 100}%`];
-				const rate = item.meter.rate;
-				if (rate > 0) parts.push(formatSpeed(rate), `${formatDuration((item.size - sent) / rate)} left`);
+				return 'Waiting…';
+			case 'sending': {
+				const parts = [`${item.size ? Math.floor((send.sent / item.size) * 100) : 100}%`];
+				const rate = send.meter.rate;
+				if (rate > 0) parts.push(formatSpeed(rate), `${formatDuration((item.size - send.sent) / rate)} left`);
 				return parts.join(' · ');
 			}
 			case 'finishing':
 				return 'Finishing…';
 			case 'delivered':
-				return `Delivered${this.averageSpeed(item)}`;
-			case 'received':
-				return `Received${this.averageSpeed(item)}`;
+				return `Delivered${averageSpeed(item.size, send)}`;
 			case 'cancelled':
 				return 'Cancelled';
 			case 'cancelled-remote':
-				return item.dir === 'out' ? 'Cancelled by the other device' : 'Cancelled by the sender';
+				return `Cancelled by ${send.member.name}`;
 			case 'failed':
 				return item.error ?? 'Interrupted — connection lost';
 		}
 		return '';
 	}
 
-	averageSpeed(item) {
-		if (!item.startedAt || !item.endedAt || item.size < 1024 * 1024) return '';
-		return ` · ${formatSpeed((item.size * 1000) / Math.max(1, item.endedAt - item.startedAt))}`;
+	progressIn(item, force = false) {
+		const now = performance.now();
+		if (item.state === 'receiving') item.meter.add(item.done);
+		if (!force && now - (item.uiAt ?? 0) < UI_INTERVAL) return;
+		item.uiAt = now;
+		item.card.bar.value = item.size ? item.done / item.size : 1;
+		item.card.status.textContent = this.inStatus(item);
 	}
+
+	inStatus(item) {
+		switch (item.state) {
+			case 'receiving': {
+				const parts = [`${item.size ? Math.floor((item.done / item.size) * 100) : 100}%`];
+				const rate = item.meter.rate;
+				if (rate > 0) parts.push(formatSpeed(rate), `${formatDuration((item.size - item.done) / rate)} left`);
+				return parts.join(' · ');
+			}
+			case 'received':
+				return `Received${averageSpeed(item.size, item)}`;
+			case 'cancelled':
+				return 'Cancelled';
+			case 'cancelled-remote':
+				return 'Cancelled by the sender';
+			case 'failed':
+				return 'Interrupted — connection lost';
+		}
+		return '';
+	}
+}
+
+function sender(member) {
+	return h('div', { class: 'sender', style: `--who: ${member.color}` }, member.name);
+}
+
+function averageSpeed(size, { startedAt, endedAt }) {
+	if (!startedAt || !endedAt || size < 1024 * 1024) return '';
+	return ` · ${formatSpeed((size * 1000) / Math.max(1, endedAt - startedAt))}`;
 }

@@ -1,5 +1,5 @@
 import { CH } from '../protocol.js';
-import { button, h, icon, toast } from '../ui/dom.js';
+import { button, h, icon, openDialog, toast } from '../ui/dom.js';
 import { randomId, readJSON, wakeLock, writeJSON } from '../util.js';
 
 const PREFS_KEY = 'peerkit.stream';
@@ -14,21 +14,24 @@ const MUSIC_BITRATE = 256000;
 const KIND_NOUN = { camera: 'camera', screen: 'shared screen' };
 
 /*
+ * For now a stream goes to one member of the room (the choice is made when it starts).
+ *
  * Protocol (ch: 'stream'). Media goes over a peerjs MediaConnection with metadata {id, kind}; the
  * receiver answers without a stream. peerjs only closes a call once ICE fails, which takes long,
  * so start and stop are also sent on the control channel.
  *   start {id, kind}   sender → receiver, just before the call
  *   stop  {id}         sender → receiver
  *   close {id}         receiver → sender: the viewer closed it, stop sending
- * After a dropped link the sender calls again with the same id; the receiver treats it as a resume.
+ * After a dropped link the sender calls the same device again (its peer ID may be new after a reload)
+ * with the same id; the receiver treats it as a resume.
  */
 
 export default {
 	id: 'stream',
 	title: 'Stream',
 	supported: () => typeof RTCPeerConnection === 'function',
-	mount(el, session, ctx) {
-		const tool = new StreamTool(el, session, ctx);
+	mount(el, room, ctx) {
+		const tool = new StreamTool(el, room, ctx);
 		return () => tool.destroy();
 	},
 };
@@ -150,17 +153,17 @@ function iconButton(name, label, onclick, { disabled = false, pressed = null } =
 }
 
 class StreamTool {
-	constructor(root, session, ctx) {
-		this.session = session;
+	constructor(root, room, ctx) {
+		this.room = room;
 		this.ctx = ctx;
 		this.prefs = loadPrefs();
-		this.out = null; // { id, kind, stream, call, paused, timer, locked }
-		this.in = null; // { id, kind, call, stream, state: connecting | playing | paused | ended, timer, locked }
+		this.out = null; // { id, kind, to, toDevice, toName, stream, call, paused, timer, locked }
+		this.in = null; // { id, kind, from, fromName, call, stream, state: connecting | playing | paused | ended, timer, locked }
+		this.picker = null;
 		this.soundOn = false;
 		this.busy = false; // waiting for a capture prompt or a camera switch
 		this.cameraCount = 0;
 		this.resume = readResume();
-		this.wasConnected = false;
 
 		this.remote = h('video', { class: 'remote', playsinline: true, autoplay: true, muted: true });
 		this.remote.muted = true;
@@ -183,44 +186,75 @@ class StreamTool {
 		for (const type of ['enterpictureinpicture', 'leavepictureinpicture']) this.remote.addEventListener(type, () => this.render());
 
 		this.unsubscribe = [
-			session.onMessage(CH.STREAM, msg => this.onMessage(msg)),
-			session.on('call', call => this.onCall(call)),
-			session.on('state', () => this.onState()),
+			room.on(`msg:${CH.STREAM}`, (msg, member) => this.onMessage(msg, member)),
+			room.on('call', (call, member) => this.onCall(call, member)),
+			room.on('link-up', member => this.onLinkUp(member)),
+			room.on('link-down', member => this.onLinkDown(member)),
+			room.on('members', () => this.render()),
 		];
-		this.onState();
+		this.render();
 	}
 
 	destroy() {
 		this.unsubscribe.forEach(fn => fn());
 		document.removeEventListener('fullscreenchange', this.onFullscreen);
+		this.picker?.close();
 		this.stopOutgoing({ keepResume: true });
 		this.dropIncoming();
 		this.el.remove();
 	}
 
 	get connected() {
-		return this.session.state === 'connected';
+		return this.room.members.length > 0;
 	}
 
-	onState() {
-		const connected = this.connected;
-		if (connected !== this.wasConnected) {
-			this.wasConnected = connected;
-			if (connected) {
-				if (this.out?.paused) this.resumeOutgoing();
-			} else {
-				// The session reconnects by itself; keep the capture running meanwhile.
-				if (this.out && !this.out.paused) this.pauseOutgoing();
-				if (this.in && this.in.state !== 'ended') this.pauseIncoming();
-			}
+	onLinkUp(member) {
+		// The same device again, possibly with a new peer ID after a reload.
+		const out = this.out;
+		if (out?.paused && out.toDevice === member.deviceId) {
+			out.to = member.peerId;
+			this.resumeOutgoing();
 		}
 		this.render();
 	}
 
-	requireConnection() {
-		if (this.connected) return true;
-		toast('Not connected');
-		return false;
+	onLinkDown(member) {
+		// Links come back by themselves; keep the capture running meanwhile.
+		if (this.out && !this.out.paused && this.out.to === member.peerId) this.pauseOutgoing();
+		if (this.in && this.in.state !== 'ended' && this.in.from === member.peerId) this.pauseIncoming();
+		this.render();
+	}
+
+	/** Who gets the stream: the only other member, or the one picked from a list (a tap there counts as the user's gesture). */
+	chooseMember(kind, start) {
+		const members = this.room.members;
+		if (!members.length) {
+			toast('Nobody else is in the room');
+			return;
+		}
+		if (members.length === 1) {
+			start(members[0]);
+			return;
+		}
+		this.picker?.close();
+		const dialog = (this.picker = openDialog(h('div', { class: 'sheet-body' },
+			h('h2', {}, kind === 'screen' ? 'Share your screen with' : 'Share your camera with'),
+			h('ul', { class: 'member-pick' }, members.map(member => h('li', {},
+				h('button', {
+					type: 'button',
+					class: 'member-pick-item',
+					style: `--who: ${member.color}`,
+					onclick: () => {
+						dialog.close();
+						if (this.room.member(member.peerId)) start(member);
+						else toast(`${member.name} left the room`);
+					},
+				}, member.name)))),
+			h('p', { class: 'hint' }, 'For now a stream goes to one person.'),
+			h('div', { class: 'actions end' }, button('Cancel', null, () => dialog.close(), 'btn ghost')))));
+		dialog.addEventListener('close', () => {
+			if (this.picker === dialog) this.picker = null;
+		});
 	}
 
 	savePrefs(patch) {
@@ -230,16 +264,16 @@ class StreamTool {
 
 	// --- outgoing ---
 
-	async startCamera() {
-		if (this.busy || !this.requireConnection()) return;
+	async startCamera(member) {
+		if (this.busy) return;
 		this.busy = true;
 		this.render();
 		try {
 			const stream = await getCamera(this.prefs);
-			if (!this.connected) return stopTracks(stream);
+			if (!this.room.member(member.peerId)) return stopTracks(stream);
 			stream.getVideoTracks()[0].contentHint = 'motion';
 			for (const track of stream.getAudioTracks()) track.enabled = this.prefs.mic;
-			this.beginOutgoing('camera', stream);
+			this.beginOutgoing('camera', stream, member);
 			this.countCameras();
 		} catch (err) {
 			console.warn('[peerkit] camera failed', err);
@@ -250,17 +284,17 @@ class StreamTool {
 		}
 	}
 
-	async startScreen() {
-		if (this.busy || !this.requireConnection()) return;
+	async startScreen(member) {
+		if (this.busy) return;
 		this.busy = true;
 		this.render();
 		try {
 			// Nothing may be awaited before this call: it needs the click's user activation.
 			const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: SCREEN_AUDIO });
-			if (!this.connected) return stopTracks(stream);
+			if (!this.room.member(member.peerId)) return stopTracks(stream);
 			stream.getVideoTracks()[0].contentHint = 'detail';
 			for (const track of stream.getAudioTracks()) track.contentHint = 'music';
-			this.beginOutgoing('screen', stream);
+			this.beginOutgoing('screen', stream, member);
 		} catch (err) {
 			// Cancelling the picker is a NotAllowedError too.
 			if (err?.name !== 'NotAllowedError') toast(mediaError(err, 'screen'));
@@ -280,9 +314,20 @@ class StreamTool {
 		}
 	}
 
-	beginOutgoing(kind, stream) {
+	beginOutgoing(kind, stream, member) {
 		this.stopOutgoing();
-		const out = (this.out = { id: randomId(4), kind, stream, call: null, paused: false, timer: null, locked: false });
+		const out = (this.out = {
+			id: randomId(4),
+			kind,
+			to: member.peerId,
+			toDevice: member.deviceId,
+			toName: member.name,
+			stream,
+			call: null,
+			paused: false,
+			timer: null,
+			locked: false,
+		});
 		for (const track of stream.getVideoTracks()) this.watchTrack(out, track);
 		this.lock(out);
 		this.resume = null;
@@ -300,8 +345,8 @@ class StreamTool {
 	}
 
 	callRemote(out) {
-		this.session.send(CH.STREAM, { type: 'start', id: out.id, kind: out.kind });
-		const call = this.session.call(out.stream, { id: out.id, kind: out.kind }, callOptions(out.kind));
+		this.room.send(CH.STREAM, { type: 'start', id: out.id, kind: out.kind }, out.to);
+		const call = this.room.call(out.to, out.stream, { id: out.id, kind: out.kind }, callOptions(out.kind));
 		if (!call) {
 			toast('Could not start the stream: the signaling server is not reachable');
 			this.stopOutgoing();
@@ -338,7 +383,7 @@ class StreamTool {
 		if (!out) return;
 		this.out = null;
 		clearTimeout(out.timer);
-		if (notify) this.session.send(CH.STREAM, { type: 'stop', id: out.id });
+		if (notify) this.room.send(CH.STREAM, { type: 'stop', id: out.id }, out.to);
 		closeCall(out);
 		stopTracks(out.stream);
 		this.unlock(out);
@@ -424,39 +469,42 @@ class StreamTool {
 
 	// --- incoming ---
 
-	onMessage(msg) {
+	onMessage(msg, member) {
 		const id = typeof msg.id === 'string' ? msg.id.slice(0, 32) : null;
 		if (!id) return;
 		switch (msg.type) {
 			case 'start':
-				this.expectIncoming(id, msg.kind === 'screen' ? 'screen' : 'camera');
+				this.expectIncoming(id, msg.kind === 'screen' ? 'screen' : 'camera', member);
 				break;
 			case 'stop':
-				if (this.in?.id === id) this.endIncoming();
+				if (this.in?.id === id && this.in.from === member.peerId) this.endIncoming();
 				break;
 			case 'close':
-				if (this.out?.id === id) {
+				if (this.out?.id === id && this.out.to === member.peerId) {
 					this.stopOutgoing({ notify: false });
-					toast('The other device closed your stream');
+					toast(`${member.name} closed your stream`);
 				}
 				break;
 		}
 	}
 
 	/** Announced on the control channel; the call itself takes a trip through the server. */
-	expectIncoming(id, kind) {
-		if (this.in?.id === id) return; // the same stream resuming after a reconnect
+	expectIncoming(id, kind, member) {
+		if (this.in?.id === id) {
+			this.in.from = member.peerId; // the same stream resuming after a reconnect
+			return;
+		}
 		this.dropIncoming();
-		this.in = { id, kind, call: null, stream: null, state: 'connecting', timer: null, locked: false };
+		this.in = { id, kind, from: member.peerId, fromName: member.name, call: null, stream: null, state: 'connecting', timer: null, locked: false };
 		this.lock(this.in);
 		this.ctx.activate();
 		this.render();
 	}
 
-	onCall(call) {
+	onCall(call, member) {
 		const meta = call.metadata ?? {};
 		const id = typeof meta.id === 'string' ? meta.id.slice(0, 32) : randomId(4);
-		this.expectIncoming(id, meta.kind === 'screen' ? 'screen' : 'camera');
+		this.expectIncoming(id, meta.kind === 'screen' ? 'screen' : 'camera', member);
 		const inc = this.in;
 		closeCall(inc);
 		clearTimeout(inc.timer);
@@ -475,7 +523,7 @@ class StreamTool {
 		call.on('close', () => {
 			if (this.in !== inc || inc.call !== call || inc.state === 'ended') return;
 			inc.call = null;
-			if (this.connected) this.endIncoming();
+			if (this.room.member(inc.from)) this.endIncoming();
 			else this.pauseIncoming();
 		});
 		call.on('error', err => console.warn('[peerkit] media call error', err));
@@ -515,7 +563,7 @@ class StreamTool {
 
 	/** The viewer closes the stream: the sender stops too. */
 	closeIncoming() {
-		if (this.in && this.in.state !== 'ended') this.session.send(CH.STREAM, { type: 'close', id: this.in.id });
+		if (this.in && this.in.state !== 'ended') this.room.send(CH.STREAM, { type: 'close', id: this.in.id }, this.in.from);
 		this.dropIncoming();
 	}
 
@@ -614,16 +662,16 @@ class StreamTool {
 	renderMessage(inc, out) {
 		let content = null;
 		if (inc?.state === 'connecting') {
-			content = [h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', {}, `Connecting to the ${KIND_NOUN[inc.kind]}…`)];
+			content = [h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', {}, `Connecting to ${inc.fromName}’s ${KIND_NOUN[inc.kind]}…`)];
 		} else if (inc?.state === 'paused') {
 			content = [h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', {}, 'Paused until the connection comes back…')];
 		} else if (inc?.state === 'ended') {
-			content = [h('p', {}, inc.kind === 'screen' ? 'Screen sharing ended' : 'Camera stream ended'), button('Close', null, () => this.dropIncoming(), 'btn')];
+			content = [h('p', {}, `${inc.fromName}’s ${inc.kind === 'screen' ? 'screen sharing' : 'camera stream'} ended`), button('Close', null, () => this.dropIncoming(), 'btn')];
 		} else if (!inc && !out) {
 			content = [
 				icon('camera'),
-				h('p', {}, 'Share your camera or screen with the other device.'),
-				h('p', { class: 'hint' }, 'When the other device shares, its video appears here.'),
+				h('p', {}, 'Share your camera or screen with someone in the room.'),
+				h('p', { class: 'hint' }, 'When someone shares with you, the video appears here.'),
 			];
 		}
 		this.message.hidden = !content;
@@ -637,7 +685,7 @@ class StreamTool {
 		if (!show) return;
 		this.resumeBar.replaceChildren(
 			h('span', {}, `Your ${kind === 'screen' ? 'screen sharing' : 'camera'} stopped when the page reloaded or the connection dropped.`),
-			button('Resume', null, () => (kind === 'screen' ? this.startScreen() : this.startCamera()), 'btn small primary'),
+			button('Resume', null, () => this.chooseMember(kind, member => (kind === 'screen' ? this.startScreen(member) : this.startCamera(member))), 'btn small primary'),
 			iconButton('close', 'Dismiss', () => {
 				this.resume = null;
 				writeResume(null);
@@ -649,8 +697,8 @@ class StreamTool {
 		if (!out) {
 			const disabled = !connected || this.busy || !canCapture();
 			this.bar.replaceChildren(...[
-				button('Share camera', 'camera', () => this.startCamera(), 'btn'),
-				canShareScreen() && button('Share screen', 'monitor', () => this.startScreen(), 'btn'),
+				button('Share camera', 'camera', () => this.chooseMember('camera', member => this.startCamera(member)), 'btn'),
+				canShareScreen() && button('Share screen', 'monitor', () => this.chooseMember('screen', member => this.startScreen(member)), 'btn'),
 				!canCapture() && h('span', { class: 'hint' }, 'Sharing needs HTTPS.'),
 			].filter(Boolean));
 			for (const control of this.bar.querySelectorAll('button')) control.disabled = disabled;
@@ -659,7 +707,9 @@ class StreamTool {
 
 		const audio = out.stream.getAudioTracks();
 		const micOn = Boolean(audio[0]?.enabled);
-		const label = out.paused ? 'Paused, reconnecting…' : out.kind === 'screen' ? 'You are sharing your screen' : 'Sharing camera';
+		const label = out.paused
+			? `Paused until ${out.toName} is back…`
+			: out.kind === 'screen' ? `Sharing your screen with ${out.toName}` : `Sharing camera with ${out.toName}`;
 		const items = [h('span', { class: 'live', 'data-paused': out.paused }, label)];
 		if (out.kind === 'camera') {
 			if (this.cameraCount > 1) items.push(iconButton('switch-camera', 'Switch camera', () => this.switchCamera()));

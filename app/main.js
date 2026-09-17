@@ -1,28 +1,24 @@
-import { device } from './device.js';
-import { hostPeerId, joinLink, parseLink, recentHosts, rooms } from './rooms.js';
-import { Session, describeError } from './session.js';
-import { PUBLIC_PROFILE, peerOptions, profiles, sameConnection, serverKey } from './settings.js';
-import { IceConfig, detectRoute, parseGuestTurn } from './turn.js';
+import { MAX_MEMBERS, Room, describeError } from './room.js';
+import { newRoomCode, parseLink, roomIds, roomLink, roomStore } from './rooms.js';
+import { PUBLIC_PROFILE, isPublic, peerOptions, profiles, sameConnection } from './settings.js';
+import { IceConfig } from './turn.js';
 import { button, h, icon, openDialog, toast } from './ui/dom.js';
-import { PairView } from './ui/pair-view.js';
+import { renderQR } from './ui/qr.js';
 import { SettingsView } from './ui/settings-view.js';
-import { claimTab } from './util.js';
+import { StartView } from './ui/start-view.js';
+import { claimTab, copyText } from './util.js';
 import editor from './tools/editor/editor.js';
 import stream from './tools/stream.js';
 import transfer from './tools/transfer.js';
 
 const TOOLS = [transfer, stream, editor].filter(tool => tool.supported());
 
-// Retrying can't fix these.
-const FATAL_ERRORS = new Set(['bad-link', 'invalid-id', 'browser-incompatible']);
+const INVITE_KEY = 'peerkit.invite'; // sessionStorage: the new room whose invite sheet opens once it is ready
 const SERVER_ERRORS = new Set(['network', 'server-error', 'socket-error', 'socket-closed', 'disconnected', 'invalid-key', 'ssl-unavailable']);
-// Failures a TURN server usually fixes.
-const NO_ROUTE_ERRORS = new Set(['webrtc', 'timeout']);
-const ROUTE_CHECK_EVERY = 10000;
+// Links and codes that can't work however often they are retried.
+const DEAD_ENDS = new Set(['bad-link', 'invalid-code', 'legacy-link', 'browser-incompatible']);
 const ICE_REFRESH_EVERY = 3600 * 1000;
-// How long the server may keep refusing the room code before a new one is suggested.
-const NEW_CODE_AFTER = 60000;
-const TITLE = document.title;
+const SLOW_LOOKUP = 2; // entry attempts without an answer before the joining screen explains why
 
 const $ = id => document.getElementById(id);
 const els = {
@@ -39,8 +35,8 @@ const els = {
 	noticeText: $('notice-text'),
 	noticeSave: $('notice-save'),
 	noticeDismiss: $('notice-dismiss'),
-	pair: $('view-pair'),
-	pairRoot: $('pair-root'),
+	start: $('view-start'),
+	startRoot: $('start-root'),
 	message: $('view-message'),
 	msgSpinner: $('msg-spinner'),
 	msgTitle: $('msg-title'),
@@ -48,73 +44,73 @@ const els = {
 	msgServer: $('msg-server'),
 	msgActions: $('msg-actions'),
 	session: $('view-session'),
+	roomBar: $('room-bar'),
 	toolHost: $('tool-host'),
 	settings: $('view-settings'),
 	tabs: $('tabs'),
 };
 
+// A room link opens that room (and leaves the address bar clean); otherwise the room this device had open.
 const link = parseLink(location.hash);
-const role = link.isJoin ? 'guest' : 'host';
-// The server this session runs on. A guest follows its link (no `s` = the public server); a host uses the active profile.
-let profile = role === 'guest' ? (link.profile ?? PUBLIC_PROFILE) : profiles.active;
-const room = role === 'host' ? rooms.get(profile) : null;
-const code = room?.code ?? link.code;
-// A typed code carries no token or TURN credentials, but this device may have them from joining before.
-const recent = role === 'guest' && code ? recentHosts.find(profile, code) : null;
-const ice = new IceConfig({ role, base: profile.iceServers ?? null });
-if (role === 'guest') ice.adopt(link.turn ?? recent?.turn ?? null);
-const session = new Session({
-	role,
-	peerId: code ? hostPeerId(code) : null,
-	token: room?.token ?? link.token ?? recent?.token ?? null,
-	// peerjs keeps this config object, so new TURN credentials reach later connections.
-	peerOptions: { ...peerOptions(profile), config: ice.config },
-	isTrusted: remote => rooms.isTrusted(profile, remote.deviceId),
-	guestTurn: () => ice.forGuests,
-});
+let bootError = null;
+if (link.kind !== 'none') history.replaceState(null, '', location.pathname + location.search);
+if (link.kind === 'legacy') bootError = 'legacy-link';
+else if (link.kind === 'room' && link.error) bootError = link.error;
+else if (link.kind === 'room') roomStore.open({ code: link.code, profile: link.profile ?? PUBLIC_PROFILE, turn: link.turn });
 
-let showPair = false;
+const entry = bootError ? null : roomStore.current;
+const code = entry?.code ?? null;
+const profile = entry?.profile ?? null;
+const ice = new IceConfig({ base: profile?.iceServers ?? null });
+if (entry?.turn) ice.adopt(entry.turn);
+const room = entry
+	? new Room({
+		code,
+		// peerjs keeps this config object, so new TURN credentials reach later connections.
+		peerOptions: { ...peerOptions(profile), config: ice.config },
+		ice,
+		known: entry.known,
+	})
+	: null;
+
+let everOpen = false;
 let toolsMounted = false;
 let tabsReady = false;
 let settingsOpen = false;
 let noticeDismissed = false;
-let approval = null; // { request, dialog } while the host asks whether to let a device in
 let claim = 0;
-let route = null; // { relayed, protocol } of the current link
-let routeCheckedAt = 0;
+let knownNames = '';
+let inviteDialog = null;
+let activeBeforeSettings = null;
 
 const settingsView = new SettingsView(els.settings, { onClose: closeSettings, sessionProfile: () => profile, ice });
-const pairView = role === 'host'
-	? new PairView(els.pairRoot, {
-		onJoin: join,
+if (!room && !bootError) {
+	new StartView(els.startRoot, {
+		onCreate: createRoom,
+		onJoin: code => openRoom({ code, profile: roomStore.find(code)?.profile ?? profiles.active }),
+		onJoinLink: hash => location.assign(`${location.pathname}${location.search}${hash}`),
+		onOpen: saved => openRoom(saved),
+		onForget: forgetRoom,
 		onChangeServer: openSettings,
-		onNewCode: newCode,
-		onBack: () => {
-			showPair = false;
-			render();
-		},
-	})
-	: null;
+	});
+}
 
-session.on('state', render);
-session.on('rtt', () => {
-	renderRtt();
-	checkRoute();
-});
-session.on('paired', onPaired);
-session.on('left', () => {
-	showPair = true; // the guest left on purpose: show the code again instead of "waiting for it to come back"
-});
-session.on('approval', askApproval);
-session.on('approval-end', request => {
-	if (approval?.request === request) approval.dialog.close();
-});
+if (room) {
+	room.on('state', onRoomState);
+	room.on('members', onMembers);
+	room.on('rtt', () => {
+		renderRtt();
+		renderRoomBar();
+	});
+	room.on('turn', turn => roomStore.update(code, { turn }));
+	ice.on('change', () => room.shareTurn()); // renewed credentials
+	window.peerkit = room; // handy for debugging from the console
+}
 profiles.on('change', renderNotice);
-ice.on('change', render); // new credentials for guests change the link and QR
 
-// Opening another join link in this tab starts over with it.
+// Opening another room link in this tab starts over with it.
 window.addEventListener('hashchange', () => location.reload());
-window.addEventListener('pagehide', () => session.destroy());
+window.addEventListener('pagehide', () => room?.destroy());
 window.addEventListener('pageshow', e => {
 	if (e.persisted) location.reload();
 });
@@ -122,9 +118,9 @@ window.addEventListener('pageshow', e => {
 document.addEventListener('visibilitychange', () => {
 	if (document.visibilityState !== 'visible') return;
 	ice.refresh();
-	session.checkHealth();
+	room?.checkHealth();
 });
-window.addEventListener('online', () => session.checkHealth());
+window.addEventListener('online', () => room?.checkHealth());
 setInterval(() => ice.refresh(), ICE_REFRESH_EVERY);
 // Settings is a history entry, so the Android back gesture closes it.
 if (history.state?.peerkitSettings) history.replaceState(null, '');
@@ -132,7 +128,7 @@ window.addEventListener('popstate', () => setSettingsOpen(history.state?.peerkit
 
 els.openSettings.append(icon('settings'));
 els.openSettings.addEventListener('click', () => (settingsOpen ? closeSettings() : openSettings()));
-els.leave.addEventListener('click', leave);
+els.leave.addEventListener('click', showLeave);
 els.noticeDismiss.append(icon('close'));
 els.noticeDismiss.addEventListener('click', () => {
 	noticeDismissed = true;
@@ -140,124 +136,108 @@ els.noticeDismiss.addEventListener('click', () => {
 });
 els.noticeSave.addEventListener('click', () => {
 	try {
-		toast(`Saved “${profiles.save(link.profile).name}”`);
+		toast(`Saved “${profiles.save(profile).name}”`);
 	} catch (err) {
 		toast(err.message);
 	}
 });
 
-window.peerkit = session; // handy for debugging from the console
-const iceReady = link.error ? null : ice.prepare();
-if (link.error) session.fail(link.error);
-else claimAndStart();
+const iceReady = ice.prepare();
+if (room) claimAndStart();
 render();
 
-/** One tab per session: two tabs would fight over the same peer ID or guest slot. */
+/** One open room per device: two tabs would join the same rooms twice. */
 async function claimAndStart(steal = false) {
 	const mine = ++claim;
-	const ok = await claimTab(`peerkit:${role}:${serverKey(profile)}:${code}`, {
+	const ok = await claimTab('peerkit:room', {
 		steal,
 		onLost: () => {
-			if (mine === claim) session.stop('moved-tab');
+			if (mine === claim) room.stop('moved-tab');
 		},
 	});
 	if (mine !== claim) return;
 	await iceReady; // TURN credentials must be in the config before the Peer exists
 	if (mine !== claim) return;
-	if (!ok) session.stop('other-tab');
-	else if (steal) session.retry();
-	else session.start();
+	if (!ok) room.stop('other-tab');
+	else if (steal) room.retry();
+	else room.start();
 }
 
-function onPaired(remote) {
-	checkRoute(true);
-	if (role === 'host') {
-		rooms.trust(profile, remote);
-		return;
+function onRoomState(state) {
+	if (state === 'open') {
+		if (!everOpen) {
+			everOpen = true;
+			roomStore.update(code, { known: true });
+			mountTools();
+		}
+		if (sessionStorage.getItem(INVITE_KEY) === code) {
+			sessionStorage.removeItem(INVITE_KEY);
+			showInvite();
+		}
 	}
-	// Fresh credentials from the host replace the link's, for reconnects and later joins too.
-	const turn = parseGuestTurn(session.hostTurn);
-	if (turn) ice.adopt(turn);
-	recentHosts.touch({ code, token: session.token, name: remote.name, profile, turn: turn ?? ice.fromHost });
+	render();
 }
 
-function askApproval(request) {
-	approval?.dialog.close();
-	const decide = allow => {
-		if (allow) request.allow();
-		else request.deny();
-		dialog.close();
-	};
-	const dialog = openDialog(h('div', { class: 'sheet-body' },
-		h('h2', {}, `Let “${request.name}” connect?`),
-		h('p', { class: 'hint' }, 'This device entered your room code. Allow it only if you know it.'),
-		h('p', { class: 'hint' }, 'Devices that scan your QR code or open your link connect without asking.'),
-		h('div', { class: 'actions end' },
-			button('Deny', null, () => decide(false), 'btn ghost'),
-			button('Allow', null, () => decide(true), 'btn primary'))));
-	approval = { request, dialog };
-	document.title = `Allow device? · ${TITLE}`;
-	navigator.vibrate?.(200);
-	dialog.addEventListener('close', () => {
-		request.deny(); // Esc or the back gesture means no; does nothing once answered
-		if (approval?.dialog === dialog) approval = null;
-		document.title = TITLE;
-	});
+function onMembers() {
+	const names = room.members.map(member => member.name);
+	const key = [...names].sort().join('\n');
+	if (names.length && key !== knownNames) {
+		knownNames = key;
+		roomStore.update(code, { names });
+	}
+	render();
 }
+
+// --- rendering ---
 
 function render() {
-	const { state, everConnected } = session;
-	if (state === 'connected') {
-		showPair = false;
-		mountTools();
-	}
-
-	els.status.dataset.state = state;
-	els.statusText.textContent = statusText();
-	els.leave.hidden = role === 'host' && state !== 'connected';
-	els.leave.textContent = role === 'guest' ? 'Leave' : 'Disconnect';
-	els.openSettings.setAttribute('aria-pressed', String(settingsOpen));
-	renderRtt();
-	if (state !== 'connected') route = null;
-	renderRoute();
-
-	let view = 'session';
+	let view;
 	let banner = null;
-	if (role === 'host' && state !== 'connected' && (!everConnected || showPair)) {
-		view = 'pair';
-		renderPair();
-	} else if (role === 'guest' && !everConnected) {
+	if (bootError) {
 		view = 'message';
-		renderGuestMessage();
+		const { title, text } = describeError(bootError);
+		showMessage({ title, text, server: false, actions: [button('Start page', null, goToStart, 'btn primary')] });
+	} else if (!room) {
+		view = 'start';
+	} else if (!everOpen) {
+		view = 'message';
+		renderJoining();
 	} else {
-		banner = sessionBanner();
+		view = 'session';
+		banner = roomBanner();
 	}
-
 	if (settingsOpen) {
 		view = 'settings';
 		banner = null;
 	}
-	els.pair.hidden = view !== 'pair';
+	els.start.hidden = view !== 'start';
 	els.message.hidden = view !== 'message';
 	els.session.hidden = view !== 'session';
 	els.settings.hidden = view !== 'settings';
 	els.tabs.hidden = !tabsReady || view !== 'session';
+	renderStatus();
+	renderRoomBar();
 	renderBanner(banner);
 	renderNotice();
 }
 
-function statusText() {
-	switch (session.state) {
-		case 'waiting':
-			return session.everConnected ? 'Waiting for reconnect' : 'Waiting for a device';
-		case 'connecting':
-			return session.everConnected ? 'Reconnecting…' : 'Connecting…';
-		case 'reconnecting':
-			return 'Reconnecting…';
-		case 'pending':
-			return 'Waiting for approval';
-		case 'connected':
-			return session.remote?.name ?? 'Connected';
+function renderStatus() {
+	const state = room?.state ?? 'idle';
+	const others = room?.members.length ?? 0;
+	els.status.hidden = !room;
+	els.leave.hidden = !room;
+	els.status.dataset.state = state === 'failed' ? 'failed' : state !== 'open' ? 'pending' : others ? 'connected' : 'waiting';
+	els.statusText.textContent = statusText(state, others);
+	els.openSettings.setAttribute('aria-pressed', String(settingsOpen));
+	renderRtt();
+}
+
+function statusText(state, others) {
+	switch (state) {
+		case 'open':
+			return others ? `${others + 1} in the room` : 'Only you';
+		case 'joining':
+			return 'Looking for the room…';
 		case 'failed':
 			return 'Not connected';
 		default:
@@ -265,140 +245,98 @@ function statusText() {
 	}
 }
 
+/** Round-trip time and route in the top bar when there is exactly one other member; the member chips show them otherwise. */
 function renderRtt() {
-	const show = session.state === 'connected' && session.rtt != null;
-	els.rtt.hidden = !show;
-	if (show) els.rtt.textContent = `${session.rtt} ms`;
+	const [only, ...more] = room?.state === 'open' ? room.members : [];
+	const show = Boolean(only) && !more.length;
+	els.rtt.hidden = !show || only.rtt == null;
+	if (!els.rtt.hidden) els.rtt.textContent = `${only.rtt} ms`;
+	els.route.hidden = !show || !only.route;
+	if (els.route.hidden) return;
+	const { relayed, protocol } = only.route;
+	els.route.textContent = relayed ? 'Relayed' : 'Direct';
+	els.route.dataset.relayed = String(relayed);
+	els.route.title = relayed ? `Through a TURN server${protocol ? ` (${protocol.toUpperCase()})` : ''}` : 'Direct connection between the devices';
 }
 
-/** Direct or relayed. ICE can switch routes after a network change, so this is checked again now and then. */
-async function checkRoute(force = false) {
-	if (session.state !== 'connected' || (!force && Date.now() - routeCheckedAt < ROUTE_CHECK_EVERY)) return;
-	routeCheckedAt = Date.now();
-	const ctl = session.ctl;
-	const result = await detectRoute(ctl?.peerConnection);
-	if (session.ctl !== ctl) return;
-	route = result;
-	renderRoute();
+function renderRoomBar() {
+	if (!room || !everOpen) return;
+	const chip = (member, label, title) => h('span', { class: 'member-chip', style: `--who: ${member.color}`, title }, label);
+	const members = room.members;
+	const chips = [chip(room.self, 'You', `${room.self.name} (this device)`)];
+	for (const member of members) {
+		const route = member.route ? (member.route.relayed ? 'relayed' : 'direct') : null;
+		const details = [member.rtt != null && `${member.rtt} ms`, route].filter(Boolean).join(', ');
+		chips.push(chip(member, member.name, details ? `${member.name}: ${details}` : member.name));
+	}
+	const connecting = room.connecting;
+	els.roomBar.replaceChildren(
+		h('div', { class: 'members', role: 'list', 'aria-label': 'People in the room' }, chips),
+		connecting ? h('span', { class: 'members-note' }, `Connecting to ${connecting}…`) : null,
+		!members.length && !connecting ? h('span', { class: 'members-note' }, 'Nobody else is here yet') : null,
+		button('Invite', 'share', showInvite, `btn small${members.length ? '' : ' primary'} push`));
 }
 
-function renderRoute() {
-	const show = session.state === 'connected' && route != null;
-	els.route.hidden = !show;
-	if (!show) return;
-	els.route.textContent = route.relayed ? 'Relayed' : 'Direct';
-	els.route.dataset.relayed = String(route.relayed);
-	els.route.title = route.relayed
-		? `Through a TURN server${route.protocol ? ` (${route.protocol.toUpperCase()})` : ''}`
-		: 'Direct connection between the devices';
+function renderJoining() {
+	const { state, error } = room;
+	if (state === 'failed') {
+		const { title, text } = describeError(error);
+		showMessage({ title, text, server: !DEAD_ENDS.has(error), actions: errorActions(error) });
+		return;
+	}
+	if (state === 'joining') {
+		const slow = room.entryFailures >= SLOW_LOOKUP;
+		showMessage({
+			spinner: true,
+			title: 'Looking for the room…',
+			text: slow
+				? 'No answer yet. If someone’s device just dropped off the network, the server can take up to 2 minutes to notice. On strict networks a TURN server (Settings) may be needed.'
+				: `Room ${code}`,
+			actions: [button('Back', null, goToStart, 'btn')],
+		});
+		return;
+	}
+	showMessage({ spinner: true, title: 'Connecting…', text: 'Connecting to the signaling server.', actions: [button('Back', null, goToStart, 'btn')] });
 }
 
-/** What the user can do about an error: [label, action] pairs, most useful first. */
+/** What the user can do about an error, most useful first. */
 function errorActions(error) {
+	const back = button('Back', null, goToStart, 'btn');
 	switch (error) {
 		case 'other-tab':
 		case 'moved-tab':
-			return [['Use this tab', () => claimAndStart(true)]];
-		case 'bad-link':
-		case 'invalid-id':
+			return [button('Use this tab', null, () => claimAndStart(true), 'btn primary'), back];
+		case 'not-found':
+			return [button('Wait in this room', null, () => room.waitHere(), 'btn primary'), button('Try again', null, () => room.retry(), 'btn'), back];
 		case 'browser-incompatible':
-			return [];
-		case 'ended':
-			return [['Join again', () => session.retry()]];
-		default:
-			return [['Try again', () => session.retry()]];
-	}
-}
-
-const actionButtons = actions => actions.map(([label, fn], i) => button(label, null, fn, i === 0 ? 'btn primary' : 'btn'));
-
-function renderPair() {
-	pairView.update({
-		code,
-		url: session.state === 'waiting' ? joinLink({ code, token: session.token, profile, turn: ice.forGuests }) : null,
-		profile,
-		status: hostStatus(),
-		showBack: session.everConnected,
-	});
-}
-
-function hostStatus() {
-	const { state, error } = session;
-	if (state === 'waiting') return null;
-	if (state === 'failed') {
-		const { title, text } = describeError(error);
-		const actions = actionButtons(errorActions(error));
-		if (SERVER_ERRORS.has(error)) actions.push(button('Server settings', null, openSettings, 'btn'));
-		return { title, text, actions };
-	}
-	if (session.idTakenSince != null) {
-		const long = Date.now() - session.idTakenSince > NEW_CODE_AFTER;
-		return {
-			spinner: true,
-			title: `Claiming ${code}…`,
-			text: long
-				? 'The server still reports this code as in use. Another device may have the same code, or PeerKit is open somewhere else.'
-				: 'The server still holds this code from before the page was reloaded. This can take up to a minute.',
-			actions: long ? [button('Use a new code', null, newCode, 'btn primary')] : [],
-		};
-	}
-	return { spinner: true, title: 'Starting…', text: 'Connecting to the signaling server.' };
-}
-
-function renderGuestMessage() {
-	const { state, error } = session;
-	if (state === 'failed') {
-		const { title, text } = describeError(error);
-		const actions = actionButtons(errorActions(error));
-		// Without any relay, strict networks can't be crossed at all.
-		const suggestTurn = NO_ROUTE_ERRORS.has(error) && !ice.active;
-		if (suggestTurn) actions.push(button('TURN settings', null, openSettings, 'btn'));
-		actions.push(button('Start over', null, startOver, actions.length ? 'btn' : 'btn primary'));
-		showMessage({
-			title,
-			text: suggestTurn ? `${text} A TURN server (Settings) fixes this on most networks.` : text,
-			server: !FATAL_ERRORS.has(error),
-			actions,
-		});
-	} else if (state === 'pending') {
-		showMessage({ spinner: true, title: 'Waiting for approval', text: `Confirm “${device.name}” on the host screen.` });
-	} else if (state === 'connecting') {
-		showMessage({ spinner: true, title: `Joining ${code}…`, text: 'Setting up a direct connection between the devices.' });
-	} else {
-		showMessage({ spinner: true, title: 'Joining…', text: 'Connecting to the signaling server.' });
-	}
-}
-
-function sessionBanner() {
-	const { state, error } = session;
-	const other = session.remote?.name ?? 'The other device';
-	switch (state) {
-		case 'connected':
-			return null;
-		case 'waiting':
-			return { text: `${other} disconnected. Waiting for it to come back…`, action: ['Show code', () => { showPair = true; render(); }] };
-		case 'pending':
-			return { text: 'Waiting for the host to allow this device…' };
-		case 'reconnecting':
-			return {
-				text: session.retryError === 'peer-unavailable' ? `${other} is not reachable. Retrying…` : 'Connection lost. Reconnecting…',
-				action: ['Retry now', () => session.retry()],
-			};
-		case 'failed': {
-			const { title, text } = describeError(error);
-			return { kind: 'bad', text: `${title}. ${text}`, action: errorActions(error)[0] };
+			return [back];
+		default: {
+			const actions = [button('Try again', null, () => room.retry(), 'btn primary')];
+			if (SERVER_ERRORS.has(error)) actions.push(button('Server settings', null, openSettings, 'btn'));
+			return [...actions, back];
 		}
-		default:
-			return { text: role === 'host' ? 'Reconnecting to the server…' : 'Reconnecting…' };
 	}
+}
+
+function roomBanner() {
+	const { state, error } = room;
+	if (state === 'failed') {
+		const { title, text } = describeError(error);
+		const [action] = errorActions(error);
+		return { kind: 'bad', text: `${title}. ${text}`, action: action && [action.textContent, () => action.click()] };
+	}
+	if (room.signalingLost) {
+		return { text: 'Server connection lost. People already here stay connected; nobody new can join until it is back.' };
+	}
+	return null;
 }
 
 function showMessage({ spinner = false, title, text, server = true, actions = [] }) {
 	els.msgSpinner.hidden = !spinner;
 	els.msgTitle.textContent = title;
 	els.msgText.textContent = text;
-	els.msgServer.hidden = !server;
-	els.msgServer.textContent = `Server: ${profile.name}`;
+	els.msgServer.hidden = !server || !profile;
+	if (profile) els.msgServer.textContent = `Server: ${profile.name}`;
 	els.msgActions.replaceChildren(...actions);
 }
 
@@ -414,12 +352,113 @@ function renderBanner(banner) {
 	}
 }
 
-/** Offer to save the server a guest got from the link, unless this device already has it. */
+/** Offer to save the server of a room that came with a link, unless this device already has it. */
 function renderNotice() {
-	const show = Boolean(link.profile) && !noticeDismissed && !settingsOpen && !profiles.findSame(link.profile);
+	const show = Boolean(profile) && !isPublic(profile) && !noticeDismissed && !settingsOpen && !profiles.findSame(profile);
 	els.notice.hidden = !show;
-	if (show) els.noticeText.textContent = `This session uses the server “${link.profile.name}”.`;
+	if (show) els.noticeText.textContent = `This room uses the server “${profile.name}”.`;
 }
+
+// --- room actions ---
+
+function showInvite() {
+	if (!room) return;
+	inviteDialog?.close();
+	const url = roomLink({ code, profile, turn: ice.forRoom });
+	const qr = h('div', { class: 'qr', role: 'img', 'aria-label': 'QR code with the room link' });
+	const linkInput = h('input', { class: 'link', type: 'text', readonly: true, value: url, 'aria-label': 'Room link', onfocus: () => linkInput.select() });
+	const dialog = (inviteDialog = openDialog(h('div', { class: 'sheet-body invite' },
+		h('h2', {}, 'Invite to this room'),
+		h('p', { class: 'room-code' }, code),
+		qr,
+		linkInput,
+		h('div', { class: 'actions' },
+			button('Copy link', 'copy', async () => toast((await copyText(url)) ? 'Link copied' : 'Copy failed'), 'btn primary'),
+			button('Copy code', 'copy', async () => toast((await copyText(code)) ? 'Code copied' : 'Copy failed'), 'btn'),
+			navigator.share && button('Share…', 'share', () => navigator.share({ title: 'PeerKit room', text: 'Join my PeerKit room', url }).catch(() => {}), 'btn')),
+		h('p', { class: 'hint' },
+			`Scan the QR code, open the link, or type the code in PeerKit → Join. Up to ${MAX_MEMBERS} devices. `,
+			'Anyone with the code can join, read the documents and come back later. To leave someone out, make a new room.'),
+		h('p', { class: 'server-line' }, 'Server: ', h('strong', {}, profile.name)),
+		h('div', { class: 'actions end' }, button('Done', null, () => dialog.close(), 'btn ghost')))));
+	renderQR(qr, url);
+	dialog.addEventListener('close', () => {
+		if (inviteDialog === dialog) inviteDialog = null;
+	});
+}
+
+function showLeave() {
+	if (!room) return;
+	const dialog = openDialog(h('div', { class: 'sheet-body' },
+		h('h2', {}, 'Leave this room?'),
+		h('p', { class: 'hint' }, 'The others stay in the room. You can come back from Recent rooms or with the code.'),
+		h('p', { class: 'hint' }, '“Leave and forget” also deletes the room’s documents from this device; the others keep theirs.'),
+		h('div', { class: 'actions end' },
+			button('Cancel', null, () => dialog.close(), 'btn ghost'),
+			button('Leave and forget', 'trash', () => leaveRoom(true), 'btn danger'),
+			button('Leave', null, () => leaveRoom(false), 'btn primary'))));
+}
+
+async function leaveRoom(forget) {
+	await room.leave();
+	sessionStorage.removeItem(INVITE_KEY);
+	if (forget) {
+		roomStore.forget(code);
+		await deleteRoomData(code);
+	} else {
+		roomStore.leave();
+	}
+	reloadClean();
+}
+
+function createRoom() {
+	const code = newRoomCode();
+	roomStore.open({ code, profile: profiles.active, known: true });
+	sessionStorage.setItem(INVITE_KEY, code);
+	reloadClean();
+}
+
+function openRoom({ code, profile }) {
+	roomStore.open({ code, profile });
+	reloadClean();
+}
+
+async function forgetRoom(saved) {
+	if (!confirm(`Forget the room ${saved.code}?\n\nIts documents are deleted from this device. The others in the room keep theirs.`)) return;
+	roomStore.forget(saved.code);
+	await deleteRoomData(saved.code);
+	toast('Room forgotten');
+}
+
+/** Delete what this device keeps for a room (the editor's IndexedDB database). */
+function deleteRoomData(code) {
+	return new Promise(resolve => {
+		setTimeout(resolve, 2000); // a blocked database never answers
+		try {
+			const request = indexedDB.deleteDatabase(`peerkit.doc:${roomIds(code).id}`);
+			request.onsuccess = request.onerror = request.onblocked = () => resolve();
+		} catch {
+			resolve();
+		}
+	});
+}
+
+/** Back to the start screen. A room that never opened here and wasn't known is dropped from the list. */
+async function goToStart() {
+	if (room) {
+		room.destroy();
+		if (!everOpen && !roomStore.find(code)?.known) roomStore.forget(code);
+		else roomStore.leave();
+	}
+	reloadClean();
+}
+
+function reloadClean() {
+	history.replaceState(null, '', location.pathname + location.search);
+	location.reload();
+}
+
+// --- settings ---
 
 function openSettings() {
 	if (settingsOpen) return;
@@ -435,28 +474,20 @@ function closeSettings() {
 function setSettingsOpen(open) {
 	if (open === settingsOpen) return;
 	settingsOpen = open;
-	if (open) settingsView.show();
-	else {
+	if (open) {
+		activeBeforeSettings = profiles.active;
+		settingsView.show();
+	} else {
 		settingsView.hide();
-		applySettings();
+		const active = profiles.active;
+		if (room && !sameConnection(active, activeBeforeSettings) && !sameConnection(active, profile)) {
+			toast('A room stays on its own server. The selected server is used for new rooms.');
+		}
 	}
 	render();
 }
 
-/** After leaving Settings: follow a change of the active server where that is safe. */
-function applySettings() {
-	if (role === 'guest') return; // a guest keeps the server from its link
-	const next = profiles.active;
-	if (sameConnection(next, profile)) {
-		profile = next; // a rename only changes the name shown and put in the link
-		return;
-	}
-	if (!session.everConnected) {
-		location.reload(); // nothing to lose yet: restart on the new server with its own code
-		return;
-	}
-	toast('The new server will be used for the next session');
-}
+// --- tools ---
 
 function mountTools() {
 	if (toolsMounted) return;
@@ -474,17 +505,16 @@ function mountTools() {
 		tabs.forEach((tab, i) => tab.setAttribute('aria-current', String(i === index)));
 		tabs[index].classList.remove('notify');
 	};
-	// Tools that keep data per room (the editor's documents) key it by code and server, the same on both devices.
-	const room = `${code}@${serverKey(profile)}`;
 	els.toolHost.append(...panels);
 	if (TOOLS.length > 1) {
 		els.tabs.replaceChildren(...tabs);
 		tabsReady = true;
 	}
 	select(0);
-	TOOLS.forEach((tool, i) => tool.mount(panels[i], session, {
-		room,
-		/** Bring this tool to the front, e.g. when the other device starts a stream. */
+	TOOLS.forEach((tool, i) => tool.mount(panels[i], room, {
+		// Tools that keep data per room (the editor's documents) key it by the room ID, the same on every device.
+		room: roomIds(code).id,
+		/** Bring this tool to the front, e.g. when someone starts a stream. */
 		activate: () => select(i),
 		/** Mark the tab when something arrived while another tool is shown. */
 		notify: () => {
@@ -497,41 +527,4 @@ function mountTools() {
 			return () => showListeners[i].delete(fn);
 		},
 	}));
-}
-
-async function leave() {
-	if (role === 'guest') {
-		if (session.state === 'connected' && !confirm('Leave this session?')) return;
-		await session.leave();
-		startOver();
-		return;
-	}
-	const name = session.remote?.name ?? 'the other device';
-	if (!confirm(`Disconnect ${name}?\n\nIt can connect again with your code, QR code or link.`)) return;
-	await session.leave();
-	showPair = true;
-	render();
-}
-
-async function join(url) {
-	if (session.state === 'connected') {
-		if (!confirm('Leave the current session and join another host?')) return;
-		await session.leave();
-	}
-	location.assign(url); // only the hash changes: the hashchange listener reloads the page as a guest
-}
-
-function newCode() {
-	const connected = session.state === 'connected';
-	const question = 'Create a new room code?\n\nThe current code, QR code and link stop working, and devices that joined before need the new code.'
-		+ (connected ? ' The connected device will be disconnected.' : '');
-	if (!confirm(question)) return;
-	rooms.regenerate(profile);
-	startOver();
-}
-
-function startOver() {
-	session.destroy();
-	history.replaceState(null, '', location.pathname + location.search);
-	location.reload();
 }

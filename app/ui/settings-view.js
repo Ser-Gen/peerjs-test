@@ -66,7 +66,7 @@ export class SettingsView {
 		this.el = el;
 		this.onClose = onClose;
 		this.sessionProfile = sessionProfile;
-		this.ice = ice; // the session's IceConfig: which TURN credentials it uses
+		this.ice = ice; // the room's IceConfig: which TURN credentials it uses
 		this.open = false;
 		this.dialog = null;
 		this.tests = new Map(); // profile id or TURN_TEST → { kind, text }
@@ -93,7 +93,7 @@ export class SettingsView {
 		const current = this.sessionProfile();
 		const list = profiles.list();
 		const activeId = profiles.active.id;
-		const currentSaved = list.some(p => sameConnection(p, current));
+		const currentSaved = !current || list.some(p => sameConnection(p, current)); // current: null outside a room
 
 		this.el.replaceChildren(
 			h('div', { class: 'settings-inner' },
@@ -105,10 +105,10 @@ export class SettingsView {
 					h('h2', {}, 'Signaling server'),
 					h('p', { class: 'hint' },
 						'Devices find each other through this server, so both must use the same one. ',
-						'The pairing link and QR code carry it: the other device needs no setup.'),
-					h('p', { class: 'hint' }, 'The selected server is used when you start a session.'),
-					!currentSaved && h('p', { class: 'hint' }, `This session uses “${current.name}” from the link.`),
-					h('ul', { class: 'profiles' }, list.map(p => this.renderProfile(p, p.id === activeId, sameConnection(p, current)))),
+						'Room links and QR codes carry it: other devices need no setup.'),
+					h('p', { class: 'hint' }, 'The selected server is used for new rooms and typed room codes.'),
+					!currentSaved && h('p', { class: 'hint' }, `This room uses “${current.name}” from its link.`),
+					h('ul', { class: 'profiles' }, list.map(p => this.renderProfile(p, p.id === activeId, Boolean(current) && sameConnection(p, current)))),
 					button('Add server', 'plus', () => this.edit(null, {}), 'btn')),
 
 				this.renderTurn(),
@@ -127,11 +127,11 @@ export class SettingsView {
 							enterkeyhint: 'done',
 							onchange: e => this.saveName(e.target),
 						}),
-						h('small', {}, 'The other device sees this name, also when a host asks whether to let this device in. Used from the next connection.'))),
+						h('small', {}, 'Others in the room see this name.'))),
 
 				h('section', { class: 'settings-section' },
 					h('h2', {}, 'Backup'),
-					h('p', { class: 'hint' }, 'Move your servers and TURN settings to another device without pairing.'),
+					h('p', { class: 'hint' }, 'Move your servers and TURN settings to another device.'),
 					h('div', { class: 'actions start' },
 						button('Export', 'download', () => this.exportProfiles(), 'btn'),
 						button('Import', 'upload', () => this.importProfiles(), 'btn')))));
@@ -143,7 +143,7 @@ export class SettingsView {
 			h('label', { class: 'profile-main' },
 				h('input', { type: 'radio', name: 'active-profile', checked: active, onchange: () => this.attempt(() => profiles.setActive(p.id)) }),
 				h('span', { class: 'profile-text' },
-					h('span', { class: 'profile-name' }, h('span', {}, p.name), inUse && h('span', { class: 'badge' }, 'This session')),
+					h('span', { class: 'profile-name' }, h('span', {}, p.name), inUse && h('span', { class: 'badge' }, 'This room')),
 					h('span', { class: 'profile-addr' }, serverAddress(p)))),
 			h('div', { class: 'profile-actions' },
 				button('Test', null, () => this.test(p)),
@@ -192,7 +192,7 @@ export class SettingsView {
 			field('Name', input('name', base.name, { placeholder: 'e.g. Home server', maxlength: 40, autocapitalize: 'sentences' })),
 			!id && h('label', { class: 'check' },
 				h('input', { type: 'checkbox', name: 'activate', checked: true }),
-				h('span', {}, 'Use for new sessions')),
+				h('span', {}, 'Use for new rooms')),
 			warn,
 			error,
 			result,
@@ -278,12 +278,12 @@ export class SettingsView {
 			h('h2', {}, 'TURN server'),
 			h('p', { class: 'hint' },
 				'Relays the connection when the devices can’t reach each other directly, e.g. on mobile data or strict Wi-Fi. ',
-				'This device uses it in every session, with any signaling server. ',
+				'This device uses it in every room, with any signaling server, and gives the other members temporary credentials. ',
 				h('a', { href: 'docs/turn-server.md', target: '_blank', rel: 'noopener' }, 'Server setup guide')),
 			server
 				? h('div', { class: 'profile turn' },
 					h('span', { class: 'profile-text' },
-						h('span', { class: 'profile-name' }, h('span', {}, server.host), source === 'own' && h('span', { class: 'badge' }, 'This session')),
+						h('span', { class: 'profile-name' }, h('span', {}, server.host), source === 'own' && h('span', { class: 'badge' }, 'In use')),
 						h('span', { class: 'profile-addr' }, turnSummary(server))),
 					server.secret && !canMint() && h('p', { class: 'warn-text' }, 'This page isn’t served over HTTPS, so the secret can’t be used here.'),
 					h('div', { class: 'profile-actions' },
@@ -292,7 +292,7 @@ export class SettingsView {
 						button('Remove', null, () => this.removeTurn())),
 					test && h('p', { class: 'test-result', 'data-kind': test.kind, role: 'status' }, test.text))
 				: button('Add TURN server', 'plus', () => this.editTurn(null), 'btn'),
-			source === 'host' && h('p', { class: 'hint' }, 'This session uses temporary TURN credentials from the host.'),
+			source === 'room' && h('p', { class: 'hint' }, 'This room uses temporary TURN credentials from another member.'),
 			h('label', { class: 'check' },
 				h('input', { type: 'checkbox', checked: turnSettings.relayOnly, onchange: e => this.attempt(() => turnSettings.setRelayOnly(e.target.checked)) }),
 				h('span', {}, 'Relay only (for testing)')),
@@ -324,13 +324,13 @@ export class SettingsView {
 		const secretMode = h('input', { type: 'radio', name: 'auth', value: 'secret', checked: !base?.username });
 		const passwordMode = h('input', { type: 'radio', name: 'auth', value: 'password', checked: Boolean(base?.username) });
 		const secretField = field('Secret', input('secret', base?.secret, { type: 'password', placeholder: 'static-auth-secret' }),
-			'Stays on this device. Pairing links carry temporary credentials made from it.');
+			'Stays on this device. Room links and other members get temporary credentials made from it.');
 		const showSecret = h('label', { class: 'check' },
 			h('input', { type: 'checkbox', onchange: e => (get('secret').type = e.target.checked ? 'text' : 'password') }),
 			h('span', {}, 'Show secret'));
 		const userField = field('Username', input('username', base?.username));
 		const passwordField = field('Password', input('credential', base?.credential, { type: 'password' }),
-			'Goes into pairing links as it is, so every guest can use it.');
+			'Goes into room links as it is, so everyone in the room can use it.');
 		const insecure = h('p', { class: 'warn-text', hidden: true }, 'This page isn’t served over HTTPS, so a shared secret can’t be used here.');
 		const error = h('p', { class: 'form-error', role: 'alert', hidden: true });
 		const result = h('p', { class: 'test-result', role: 'status', hidden: true });

@@ -1,6 +1,6 @@
 # PeerKit — plan for merging the peerjs demos into one tool
 
-A single mobile-first static web app. Two devices pair once (QR, link or short code) and then use every tool over that one session. These tools grow out of the existing demos: ping, share, screen, webcam, recorder, gyro and gamepad.
+A single mobile-first static web app. Two devices pair once (QR, link or short code) and then use every tool over that one session. From Slice 7 a session becomes a **room** of up to about 6 people that keeps working when anyone leaves. These tools grow out of the existing demos: ping, share, screen, webcam, recorder, gyro and gamepad.
 
 ## Decisions (from the interview)
 
@@ -8,7 +8,7 @@ A single mobile-first static web app. Two devices pair once (QR, link or short c
 |---|---|
 | Stack | Static files with no build step: `index.html` plus native ES modules. Libraries are vendored in `vendor/`. Hosted on GitHub Pages. |
 | Session | Pair once, then use all tools. Either side can open any tool. |
-| Peers | 1-to-1 for now. The protocol carries player slots from day one, and a later slice adds 1 host + N controllers. |
+| Peers | 1-to-1 until Slice 6. From Slice 7, rooms of several equal members (see **Decisions for rooms**). |
 | Server | Public 0.peerjs.com is the default. Users can add named profiles for their own peerjs-server and switch between them. |
 | Sharing config | The server profile goes into the link/QR (`#` fragment). The guest uses it right away and gets a one-tap "Save profile" option. |
 | Join methods | QR, copy/share link, short room code, list of recent hosts. |
@@ -22,6 +22,26 @@ A single mobile-first static web app. Two devices pair once (QR, link or short c
 | Browsers | Android Chrome and desktop browsers. iOS Safari is out of scope, but nothing should rule it out. |
 | UI | English. The old demos move to `/demos` and stay as reference. |
 
+## Decisions for rooms (interview on 2026-09-16)
+
+These replace the host/guest rows above from Slice 7 on. The reason: saved documents were keyed by the host's room code, so a later guest of the same host saw an earlier guest's text, and two unrelated hosts that drew the same `word-NN` code could share documents.
+
+| Topic | Decision |
+|---|---|
+| Rooms | Every session is a room of 2 to about 6 members. Pairing two devices is simply a room of 2. The host/guest model, approval prompts, remembered guests and Recent hosts go away; old data is not migrated. |
+| Connections | Full mesh: every member connects to every other member. No member is needed for the room to work, including the one who created it. |
+| Code | The code is the room's only key: 4 words from a 2048-word list (about 44 bits), e.g. `amber-otter-quiet-lamp`. Anyone who has it (typed, link or QR) joins without approval. |
+| Authority | All members are equal. There is no removal: to exclude someone, create a new room and share its code. |
+| Room data | Created together with the room and keyed by an ID derived from its code: documents, chat, file list. A newcomer gets the documents and the chat history. |
+| Chat | Transfer becomes the room chat: messages and files in one synced timeline. |
+| Files | The sender chooses per file: **Keep for the room** (members store it, so newcomers can download it later) or **Send once** (only members online now). Files open in a built-in viewer without saving them to disk first. |
+| Video | The sender sends a separate copy to each viewer, so its upload grows with each viewer. Forwarding by viewers stays a later idea; no video server is planned. |
+| Streams | Several members can share at once; each stream is its own panel. |
+| Desktop layout | dockview-core: tab groups, drag to split, resize, maximize, saved layout. The default is a main area plus the chat at the side. Phones keep the bottom tabs. |
+| TURN | Any member with a TURN secret hands out 7-day credentials to the room; members pass the newest ones along. |
+| Devices | One open room per device. Another tab shows "Open in another tab", as now. |
+| New tools | Pointer and drawing on streams, a shared whiteboard, and remote control of a PeerKit tool (not of the operating system). |
+
 ## Target structure
 
 ```
@@ -29,16 +49,18 @@ index.html              app shell (mobile-first)
 app/
   main.js               boot, hash routing, role detection (host / guest)
   settings.js           server profiles: CRUD, localStorage, encode/decode for links
-  rooms.js              room codes, trusted guests, recent hosts
+  rooms.js              room codes, trusted guests, recent hosts (Slice 7: 4-word codes, derived IDs, recent rooms)
+  room.js               (Slice 7) members, anchor, mesh of links, join check
   device.js             device ID and name
   turn.js               TURN credentials (HMAC-SHA1), relay test, Direct/Relayed detection
   session.js            Peer lifecycle, stable id, reconnect, connections, event bus
   protocol.js           message envelope {ch, type, slot, ...} + version
   ui/                   qr, toast, sheet/dialog, status bar, styles.css
   tools/                one module per tool, same interface
-    transfer.js         text + files
+    transfer.js         text + files (Slice 8: room chat with kept files and the viewer)
     stream.js           camera / screen
     editor/             shared editor: tool UI + Yjs provider over the session
+    whiteboard/         (Slice 12) shared drawing
     controller.js       phone-as-gamepad + gyro
     monitor.js          host-side input visualizer
     nes/                NES tool + frame.html that hosts the emulator
@@ -46,12 +68,14 @@ app/
 vendor/peerjs.min.js    peerjs 1.5.5 UMD
 vendor/qrcode.js
 vendor/editor.js        CodeMirror 6 + Yjs bundle, built once from pinned npm versions (recipe in vendor/README.md)
+vendor/dockview/        (Slice 9) dockview-core, MIT
+vendor/words.js         (Slice 7) the 2048-word list for room codes, with its licence
 vendor/fceux/           FCEUX Emscripten build (js + wasm), GPL-2.0, with a source link
 docs/turn-server.md     coturn setup guide
 demos/                  old demos, untouched, with their original peerjs/qrcode builds
 ```
 
-**Tool interface:** `{ id, title, supported(), mount(el, session, ctx) → unmount }`, where `ctx = { activate(), notify() }`.
+**Tool interface:** `{ id, title, supported(), mount(el, session, ctx) → unmount }`, where `ctx = { activate(), notify() }`. Slice 7 replaces `session` with the room (members, send to one or all), and Slice 9 lets a tool open several panels.
 - A tool subscribes to its own channel on the session bus.
 - `supported()` hides tools the device can't run. For example, screen share is hidden on Android.
 
@@ -60,6 +84,10 @@ demos/                  old demos, untouched, with their original peerjs/qrcode 
 - `s` is left out for the default profile, which keeps the QR small.
 - `t` is the host's secret: a guest that has it connects without an approval prompt. A typed code has no `t`.
 - `r` carries temporary TURN credentials from the host (Slice 5), never the TURN secret.
+
+**Room link format (from Slice 7):** `https://<pages>/#room=<code>&s=<base64url(profile)>&r=<base64url(TURN credentials)>`
+- The code is the only secret, so `t` goes away. `s` and `r` stay as they are.
+- A room lives on one signaling server: the one in its link.
 
 **Profile shape:** `{ name, host, port, path, key, secure, iceServers? }`
 - `iceServers` is a raw list for advanced imports. The TURN server is a device setting, not part of a profile (Slice 5).
@@ -315,6 +343,27 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - Mobile: a small toolbar above the keyboard (Undo, Redo, Tab, Outdent, Search). The layout already resizes for the keyboard (`interactive-widget=resizes-content`).
 - The Editor tab gets the `notify` dot when the other device edits while the tab is hidden.
 
+**As built** (`app/tools/editor/`, `vendor/editor.js`, `vendor/editor-src/`)
+- `vendor/editor.js` is one esbuild bundle: 746 KB, 261 KB gzipped. The comment at its top lists all 34 bundled packages with versions and licences (all MIT). The versions are pinned at least 21 days old; the rebuild recipe is in `vendor/README.md`.
+- The bundle loads the first time the Editor tab opens, or when the first `doc` message arrives, so edits from others are kept even if the tab was never opened.
+- The Editor bar:
+  - the **Documents** button opens a list with Open file and New document;
+  - chips show who has this document open;
+  - **Search** and the **⋯ options** sheet: name, language, text size, wrap, Copy all, Download, Share and Delete.
+- The editor:
+  - VS Code keys, line numbers, folding, bracket matching, multiple cursors and rectangular selection.
+  - Undo and Redo per document only undo your own edits.
+  - The search panel sits at the top, away from the phone keyboard.
+  - Plain text and Markdown turn on autocorrect and spellcheck; code modes turn them off.
+- Other people's cursors and selections show in their colour, with the name always visible (not only on hover).
+- Phones: while editing, a toolbar above the keyboard (Undo, Redo, Outdent, Indent, Search, Done) replaces the tab bar.
+- Open file: text files up to 5 MB; a NUL byte means "not a text file". CRLF becomes LF, and the language comes from the extension.
+- Stored per device (`peerkit.editor`): text size, wrap, and the last open document per room.
+- IndexedDB is probed with a small database first. Where it is blocked, documents last only while the page is open, and the empty state says so.
+- Sync: y-protocols messages as base64url on ctl, split into 12 000-character parts and paced at 256 KB buffered. A 1 MB paste is 121 messages.
+- If no member answers the first sync within 5 s, the empty state shows anyway.
+- Since Slice 7, documents are keyed by the room ID and sync with every member (see Slice 7).
+
 **Checklist**
 - [ ] Typing on the laptop appears on the phone as you type; both cursors are visible with device names.
 - [ ] Both devices type in the same line at once: no lost characters, and both end with the same text.
@@ -325,7 +374,231 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - [ ] Paste 1 MB of text: it syncs without freezing the session or breaking Transfer.
 - [ ] Open a local `.md` file, edit it together, download it.
 
-### Slice 7 — Phone as controller
+### Slice 7 — Rooms: several people, no host
+
+**Why:** up to about 6 people share one room, and it keeps working when anyone leaves. This also fixes the document leak: room data belongs to a room, not to a host's code.
+
+**Spike first** (a throwaway page; write the results into this section before the build)
+- Anchor handover on the public server and on your own peerjs-server: how soon a peer ID is free again after its holder closes the tab, reloads or loses the network. Expected: at once on a clean close, and up to the server's alive timeout (60 s by default) after a network loss.
+- Two Peer objects in one tab (member peer and anchor peer) on Android Chrome: both stay registered, and the phone copes with 5 links of ctl + file connections.
+- Two members claim the anchor at the same moment: exactly one gets it, and the other sees `unavailable-id`.
+
+**Build**
+- Room identity (`app/rooms.js`, rewritten):
+  - **New room** draws a 4-word code from a 2048-word list with `crypto.getRandomValues`. The list is vendored with its licence. Its words differ in their first 4 letters, so the Join field can autocomplete.
+  - Derived from the code with SHA-256, each with its own label:
+    - the **room ID**, the storage key for all room data;
+    - the **anchor peer ID** `pk-<hash>`, so the signaling server never sees the code;
+    - the **room key** for the join check.
+  - The device keeps its current room (code, server profile, TURN credentials) and a short list of recent rooms. Opening another room leaves the current one.
+  - **Leave and forget** deletes the room's documents, chat and kept files from this device.
+- Members and connections (`app/room.js`, replacing the host/guest parts of `session.js`):
+  - Each device has a **member peer** with a random ID per room.
+  - The **anchor** is the member that holds the anchor peer ID. It lets newcomers in and gives them the member list; the newcomer then connects to every member. Being the anchor gives no extra rights.
+  - The first member to arrive claims the anchor. When the anchor leaves, the others try to claim it after a random delay of 0–3 s, and the server lets only one succeed. Existing links stay up meanwhile.
+  - Every member checks in with the anchor every 30 s and after a reconnect, so two groups that formed during a network split merge again.
+  - Each pair of members gets ctl + file connections as today, and the per-link logic (hello, ping, the `_gen` guard, reconnect backoff) runs per link. The member with the lower peer ID dials, so a pair never opens two links.
+  - Join check: `hello` carries an HMAC with the room key over both peer IDs and a random challenge, and both sides verify it. Knowing only the anchor peer ID (as the signaling server does) is not enough to join or to pose as a member.
+  - A members strip shows each member's device name, a colour from its device ID, online or offline, and Direct or Relayed.
+  - If two members can't connect directly, a member linked to both forwards their ctl traffic (documents, chat). Streams and files are not forwarded; the UI says "Not connected to *name*".
+- TURN: any member with a TURN secret sends fresh 7-day credentials in `welcome` and every 24 h. Members keep the newest and pass them on to newcomers.
+- Tools in this slice:
+  - **Transfer**: text and files go to everyone online, with progress per member.
+  - **Editor**: one provider per link, documents keyed by the room ID. Each device sends its own awareness state on every link, and cursors use the member colour.
+  - **Stream**: to one chosen member for now, until Slice 10.
+- Start screen: **New room**, **Join** (a code or a pasted link) and recent rooms. The room screen shows the code, QR, Copy link and Share.
+- `PROTOCOL_VERSION` → 4. Old Recent hosts, room codes and editor documents are no longer read, and a one-time notice says rooms replaced pairing.
+
+**Tricky points**
+- In a room of 6, each device has 5 links. Pings, route checks and reconnect timers run per link, so keep them cheap on phones.
+- An anchor that loses its network doesn't close its socket, so handover can take up to the server's alive timeout. Newcomers see "Looking for the room…" meanwhile; members aren't affected.
+- A room whose members are all offline still exists on their devices. Whoever opens it first becomes the anchor, and the rest merge as they arrive.
+- The code is a secret shown in the QR, the link and on screen. Anyone who ever had it can come back: that's the cost of having no removal, and **New room** is the way out.
+
+**Spike results** (2026-09-16, public 0.peerjs.com, its signaling protocol spoken from Node)
+
+| Case | Result |
+|---|---|
+| Claim a free peer ID | registered in about 0.4 s |
+| Claim an ID that is held | refused at once (`ID-TAKEN`) |
+| The holder closes cleanly | free again after about 0.35 s |
+| 5 claims at the same moment | exactly one wins |
+| The holder goes silent (no close, no heartbeat) | released after about 100 s |
+
+Two Peer objects in one tab on Android Chrome can only be checked in the browser (see the checklist).
+
+**As built** (`app/room.js`, `app/rooms.js`, `app/crypto.js`, `app/ui/start-view.js`, `app/main.js`)
+- **Start screen**: New room, Join (a 4-word code or a pasted room link) and Recent rooms, which lists who was there and has a Forget button.
+  - A typed code accepts the first 4 letters of each word, in any case.
+  - A one-time note says that earlier pairings and their documents are not carried over.
+  - An old `#join=` link shows "Link from an older version".
+- **Room screen**:
+  - A members bar: "You" plus a coloured chip per member, whose tooltip shows round-trip time and Direct/Relayed, and **Invite**.
+  - The top bar shows "N in the room" or "Only you". With exactly one other member it also shows round-trip time and Direct/Relayed, as before.
+  - **Invite** is a sheet with the code, QR, link, Copy link, Copy code and Share. It opens by itself for a new room.
+  - **Leave** offers Leave (the room stays in Recent rooms) or Leave and forget (also deletes the room's documents from this device).
+- The code is the room: its ID, the anchor peer ID and the handshake key are derived from it with SHA-256. SHA-256 and HMAC are plain JS in `app/crypto.js`, because WebCrypto is missing on `http://<lan-ip>`.
+- A room link is `#room=<code>&s=…&r=…`. Opening it makes that room current and cleans the address bar; a reload reopens the current room.
+- The member peer ID (`pk-m-…`) is random per page load. A reload rejoins as the same device, recognised by its device ID, and replaces the old link on the other members.
+- **Finding the room**:
+  - A room made or opened here before (known) tries to take the anchor first. If someone holds it, it connects to them. Either way that takes under a second.
+  - An unknown room only looks. With nobody there it shows "Nobody is in this room", with **Wait in this room**.
+  - While there is no answer (a silent anchor, or a strict network), the joining screen keeps retrying and explains why after 2 attempts.
+- **Anchor handover**: when the holder's link drops or it says so, members check after 0.5 s and claim after a random 0–3 s. Every 30 s a member not linked to the holder connects to the anchor again, which also merges split groups.
+- **Links**:
+  - The handshake is an HMAC over role, nonces, both peer IDs and both DTLS fingerprints, so a wrong code or a relay in the middle is refused ("Could not join").
+  - Of two links to the same member, the dial from the lower peer ID wins unless the existing link is alive.
+  - After a drop the lower peer ID dials again, up to 6 times. Leave sends `bye`, which removes the member at once.
+- Up to 8 devices; the ninth gets "Room is full".
+- **TURN**: any member with a secret sends 7-day credentials in `welcome` and on every link up. Others take credentials only if they expire later and pass them on; the room entry stores the newest.
+- **Tools**:
+  - **Transfer**: text goes to everyone and shows the sender's name. A file goes to each member over its own link, with one card and a line per member. Join and leave show in the feed.
+  - **Stream**: goes to one member, picked from a list when there are several. It pauses and resumes with that device, also after it reloads.
+  - **Editor**: one provider for all links. Updates and cursors from a member are forwarded to members not linked to it, going by the `links` each member announces. A link going down resyncs with the others.
+- `PROTOCOL_VERSION` 4. One open room per device (Web Lock `peerkit:room`). Settings says a room stays on its link's server; the selected server is for new rooms and typed codes.
+- Differences from the plan:
+  - The limit is 8 devices, not about 6.
+  - Transfer text and files reach only directly linked members; forwarding covers documents and cursors, and the synced chat comes in Slice 8.
+  - The Direct/Relayed route per member is in the chip tooltip.
+- Checked in Node, not in a browser:
+  - A room simulation on a fake peerjs network with a virtual clock (30 checks, 20 runs in a row).
+  - The whole app in jsdom with a second, headless member (37 checks).
+  - The editor provider with 3–4 members, including forwarding (14 checks).
+  - The editor UI with two members (26 checks).
+
+**Checklist**
+- [ ] The laptop creates a room; the phone joins by QR and a third device by typing the 4-word code: all three see each other in the members strip.
+- [ ] Text from any member appears on all the others; a file reaches everyone, with progress per member.
+- [ ] Three devices edit one document together, with three coloured cursors.
+- [ ] The creator closes its tab: the other two keep chatting and editing, and a fourth device can still join.
+- [ ] The anchor loses Wi-Fi: members keep working, and a newcomer gets in within about a minute.
+- [ ] One device opens the room alone and edits, then the others arrive: the edits merge.
+- [ ] A device that was in room A joins room B: it sees none of A's documents, and B's members never get them.
+- [ ] A wrong code shows "Nobody is in this room" with **Wait in this room**.
+- [ ] Opening the app in a second tab shows "Open in another tab"; **Use this tab** moves the room there.
+- [ ] Android Chrome as the anchor (it holds two peers): other devices still join, and the phone keeps working with 3+ members.
+- [ ] Everything from the Slice 6 checklist, now with 3 devices where it applies.
+- [ ] Leave and forget: the room is gone from the list, and its documents are gone after a reload.
+
+### Slice 8 — Room chat, files and viewer
+
+**Why:** the room keeps a shared history. People who join later see what was said and can get what was kept, and files open right in the browser.
+
+**Build**
+- Transfer becomes **Chat**: a timeline in a room Y.Doc (`peerkit.room:<room ID>` in IndexedDB), synced like the editor.
+  - A message is `{id, from, name, time, text}` or a file entry. History is capped (e.g. the newest 5 000 messages), trimmed the same way on every device.
+  - Clickable links, a copy button per message and the unread dot, as now.
+- Sending a file has a **Keep for the room** switch, remembered per device:
+  - **Send once**: goes to members online now and is held in memory for this page, as today. Everyone's timeline lists the name; those who didn't get it see "Not kept".
+  - **Keep for the room**: the sender and every receiver store it in OPFS. It is named by a hash of its contents, so a copy from any member can be checked.
+  - A newcomer, or a member who was away, taps **Open** or **Download**, and the file comes from any online member who has it. If nobody online has it: "Not available right now — *name* has it".
+  - A storage limit per device in Settings (e.g. 2 GB by default): the oldest kept files are dropped first, and the timeline still lists them.
+  - Any member can **Remove from room**: the entry is marked removed and every device deletes its copy.
+- Viewer, opened from the timeline, with nothing saved to disk:
+  - Images, video and audio in the browser's own elements, when the browser can decode the format (`canPlayType`, image decoding).
+  - PDF: the browser's built-in viewer on desktop. Android Chrome has none, so pdf.js there (vendored, loaded on first use).
+  - Text and code: a read-only CodeMirror from the editor bundle with syntax colours, plus **Open as shared document**.
+  - Anything else: Download and Share.
+  - Received HTML is never rendered and scripts never run: HTML shows as source, and SVG only through `<img>`.
+
+**Tricky points**
+- WebCrypto can't hash a stream, and multi-GB files don't fit in memory. Hash fixed-size parts (e.g. 4 MB) as they are read and name the file by the hash of the part hashes. A download can then check each part as it arrives.
+- OPFS quota: check `navigator.storage.estimate()` before keeping, and request `navigator.storage.persist()` so the browser doesn't evict kept files.
+- When several members fetch from one phone, serve them one at a time.
+
+**Checklist**
+- [ ] A message sent before a device joined is in its history after it joins.
+- [ ] A photo sent "Send once" opens in the viewer for members who were online; a newcomer sees its name marked "Not kept".
+- [ ] A video sent "Keep for the room"; the sender leaves; a newcomer opens it from another member.
+- [ ] A PDF opens on the laptop and on the phone; a `.js` file shows with syntax colours; an `.html` file shows as source.
+- [ ] Remove a kept file: it disappears on all devices, and storage use goes down.
+- [ ] Reach the storage limit: the oldest kept file is dropped, and the timeline says so.
+
+### Slice 9 — Desktop layout
+
+**Why:** a laptop screen fits several tools at once: watch a stream while chatting, or edit next to the chat.
+
+**Build**
+- Vendor `dockview-core` (MIT, no dependencies; pinned at least 21 days old, 8.2.0 at the time of writing) with its licence, recorded in `vendor/README.md`.
+- On wide screens with a mouse (e.g. `(min-width: 900px) and (pointer: fine)`), tools open as dockview panels: tab groups, drag a tab to split in any direction, resize, maximize and floating panels.
+  - The default layout is a main area (Editor, streams) and a side column with Chat and the members.
+  - The layout is saved per device (`peerkit.layout`, versioned), with **Reset layout** in the menu.
+- Phones and narrow windows keep the bottom tabs. Switching between the two layouts keeps every tool's state, without remounting.
+- Tool interface: a tool can open several panels, e.g. one per document or per stream, through `ctx.openPanel({id, title, el})`. On phones these become switchable views inside the tool.
+- Unread dots work in both layouts, and `activate()` brings the panel to the front on desktop.
+
+**Tricky points**
+- Moving an element in the DOM reloads an iframe and pauses a video. Use dockview's always-rendered panels for iframes (the NES later), and call `play()` on videos after a move.
+- CodeMirror needs `requestMeasure()` after its panel resizes or becomes visible.
+
+**Checklist**
+- [ ] On the laptop: a stream in the main area and the chat at the side, both live.
+- [ ] Drag the editor next to the stream, resize, maximize one, then restore it.
+- [ ] Reload: the layout is the same; Reset layout brings back the default.
+- [ ] Narrow the window: tabs come back, the stream keeps playing and the editor keeps its cursor.
+- [ ] The phone looks and works as before.
+
+### Slice 10 — Streams to the room
+
+**Why:** anyone can show their camera or screen to the whole room, and several people can share at once.
+
+**Build**
+- A new stream is announced to the room, and every member receives it by default. A viewer who closes it stops the sending to that viewer only.
+  - A member can share one camera and one screen at the same time.
+  - The sender makes one media call per viewer. Camera switch, mic and resolution apply to all of them (`replaceTrack`, `applyConstraints`).
+  - A member who joins later gets the streams already running.
+  - The sender sees the number of viewers and the upload rate (from `getStats()`), with a warning when the upload can't keep up. Each viewer's `maxBitrate` is lowered before the picture breaks up.
+- Viewing: each stream is its own panel on desktop (Slice 9); on phones the Stream tab shows a grid with tap to focus.
+- The 30 s pause and re-call after a dropped link works per viewer. The screen-audio music settings apply to every call, as today.
+
+**Tricky points**
+- A 1080p screen share takes about 1.5–3 Mbit/s per viewer, so 5 viewers need up to about 15 Mbit/s of upload. Viewers behind the TURN relay also use the VPS's bandwidth.
+- A phone encoding several copies of its camera gets hot: lower the default resolution when it has more than 2 viewers.
+
+**Checklist**
+- [ ] The laptop shares its screen; three other devices see it.
+- [ ] The phone shares its camera while the laptop shares its screen: everyone sees both.
+- [ ] A device joins while a stream is running: it sees the stream within a few seconds.
+- [ ] One viewer closes a stream: the others keep it, and the sender's viewer count drops.
+- [ ] The sender switches camera: all viewers see the new camera without a restart.
+- [ ] The sender's upload is limited (e.g. a phone hotspot): the warning shows, and the picture gets softer instead of freezing.
+
+### Slice 11 — Pointer and drawing on streams
+
+**Why:** viewers can show exactly what they mean on a shared screen: "click here", "this line".
+
+**Build**
+- On a stream, **Point** shows the viewer's pointer with their name and colour to everyone watching, including on the sender's preview.
+- **Draw** makes strokes that fade after a few seconds; **Clear** removes them for everyone at once.
+- Positions are fractions of the video picture, not of the element, so letterboxing and different screen sizes line up.
+- Sent over ctl to the members watching, at most 30 updates per second.
+
+**Tricky points**
+- A web page can't draw over the sender's real desktop: the sender sees the marks only on its PeerKit preview. The UI says so.
+
+**Checklist**
+- [ ] The phone points at a spot on the laptop's shared screen: the laptop preview and the other viewers show it in the same place.
+- [ ] A portrait phone viewing a landscape screen: the pointer still lands in the right place.
+- [ ] Strokes fade by themselves, and Clear removes them for everyone.
+
+### Slice 12 — Shared whiteboard
+
+**Why:** sketching together, which text and streams can't do.
+
+**Build**
+- A **Whiteboard** tool: boards live in the room Y.Doc, with a list like the editor's documents.
+- Pen with pressure (Pointer Events), highlighter, eraser and colours; undo and redo of your own strokes (Y.UndoManager); pan and pinch zoom.
+- Strokes are simplified before they're stored. Other members' pens show live through awareness.
+- Export as PNG, and send it to Chat.
+
+**Checklist**
+- [ ] Three devices draw at once, and the strokes appear on all of them while being drawn.
+- [ ] Undo on one device removes only its own stroke.
+- [ ] Draw while offline, then reconnect: the strokes merge.
+- [ ] Pinch zoom on the phone doesn't draw.
+- [ ] The exported PNG matches the board.
+
+### Slice 13 — Phone as controller
 
 **Why:** gyro and gamepad become a reusable input layer, the foundation for the party games.
 
@@ -344,6 +617,7 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - A physical gamepad connected to the phone (Gamepad API) is forwarded with the same message format.
 - **Monitor tool** (host): visual pad with lit buttons, a 3D orientation cube or arrow, input latency, and a packets/sec counter.
 - Host-side API for games: `session.input.on('state', (slot, state) => …)` plus a `getPad(slot)` snapshot shaped like a `Gamepad` object.
+- In a room, the "host" is the member whose device runs the game or tool, and any other member can send it input. This is the remote control of a PeerKit tool from the rooms decisions; the operating system itself is never controlled.
 
 **Checklist**
 - [ ] Phone NES layout in landscape: pressing D-pad/A/B lights them instantly on the laptop monitor.
@@ -354,11 +628,12 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - [ ] A USB/Bluetooth gamepad connected to the phone shows on the laptop monitor.
 - [ ] Rapid tap of a button is never missed, even under packet loss.
 
-### Slice 8 — NES (two players)
+### Slice 14 — NES (two players)
 
 **Why:** the first real game on the input layer. A laptop or TV runs the emulator; a phone is the second pad, either on the couch or remotely with the picture streamed to it.
 
 **Build**
+- In a room, "host" below means the member that runs the emulator, and "guest" any other member.
 - Emulator: the FCEUX Emscripten build from the local `4player-nes` folder, copied to `vendor/fceux/` (js + wasm, renamed) with its GPL-2.0 licence and a source link. Only the build is reused: Kosmi's React glue (`nesparty.js`) is a reference, not copied.
 - It runs in a same-origin iframe (`app/tools/nes/frame.html`), because the build lives in globals (`Module`, `FS`, `SDL`, `window.neswasm`) and can only be unloaded with its page.
 - What the build offers (checked in the demo):
@@ -373,9 +648,9 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
   - Pads: keyboard (remappable, remembered) and the Gamepad API. Player 1 is the host by default; players can be swapped.
   - Save state / Load state in slots per ROM (IndexedDB), plus export/import as a file.
 - Guest (NES tab), two modes:
-  - **Controller only**: the Slice 7 NES layout, for playing in front of the host's screen.
+  - **Controller only**: the Slice 13 NES layout, for playing in front of the host's screen.
   - **Remote play**: the host streams the canvas and sound (media call kind `nes`, music audio from Slice 4) with the touch pad over it.
-- Input: the Slice 7 input channel; the host maps each slot to a pad and calls `_setGamePadValue`.
+- Input: the Slice 13 input channel; the host maps each slot to a pad and calls `_setGamePadValue`.
 - When the guest drops, the game pauses; it continues on reconnect.
 
 **Checklist**
@@ -386,42 +661,31 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - [ ] Stop the game or leave the tab: the emulator unloads (no sound, CPU drops).
 - [ ] A USB/Bluetooth gamepad on the laptop plays player 1.
 
-### Slice 9 — Party mode: 1 host + N controllers
+### Slice 15 — Party games in a room
 
-**Why:** several phones can join one screen, which is the prerequisite for multiplayer games.
+**Why:** several phones in one room play on one screen, which is the prerequisite for multiplayer games.
 
 **Build**
-- A host "Party" mode that accepts many guests.
-  - `session.js` moves from a single connection to a `peers` map. Every message already carries `slot`.
-- Lobby screen on the host:
-  - The room code in large type plus a QR.
-  - Player slots with a colour and a nickname chosen on the phone.
-  - Actions: kick, reorder slots, lock room.
-- Tools declare a `scope`:
-  - `per-peer` tools (Transfer, Stream) ask which peer to target.
-  - `broadcast` tools (Controller input) take input from all slots.
-- Reconnect keeps a player's slot, using the guest ID from Slice 3.
+- The member that runs a game (the NES, later a game module) shows a lobby: player slots with each member's colour and name. Members pick a free slot on their phone; the game screen can swap slots.
+- Reconnecting keeps a player's slot, by device ID.
 - The Monitor tool shows every slot at once.
-- NES: Four Score on; slots 1–4 map to pads 1–4, and any player can watch the stream.
-- The editor provider syncs with every peer, and each peer's cursor gets its slot colour.
+- NES: Four Score on; slots 1–4 map to pads 1–4. Remote players watch the game as a room stream (Slice 10) with the touch pad over it.
+- Kicking players and locking the room are gone from this slice: rooms have no removal. Starting a game in a new room is the way to play with a different group.
 
 **Checklist**
-- [ ] Two phones join the laptop by room code; lobby shows two coloured slots with nicknames.
+- [ ] Two phones in the laptop's room take slots 2 and 3; the lobby shows their colours and names.
 - [ ] Both controllers show separately on the monitor.
-- [ ] Reload one phone: it returns to the same slot/colour.
-- [ ] Kick a player: their phone shows "Removed from room" and can't rejoin while locked.
-- [ ] Sending a file in party mode asks which device to send to.
-- [ ] Four phones play a 4-player NES game (Four Score), each with its own pad.
-- [ ] Three devices edit one document together.
-- [ ] Normal 1-to-1 mode (Slices 1–8) still behaves as before.
+- [ ] Reload one phone: it returns to the same slot.
+- [ ] Four devices play a 4-player NES game (Four Score), each with its own pad.
+- [ ] A member far away plays from the stream with the touch pad over it.
 
-### Slice 10 — Game module API and more games
+### Slice 16 — Game module API and more games
 
 **Why:** gives new games a template, and proves the input layer is good enough for motion games too.
 
 **Build**
 - `games/<id>/game.js` interface: `{ id, title, players:{min,max}, controllerLayout, mount(el, input), unmount() }`. The host lists games in a Games tab, and the phones switch to the declared layout automatically.
-- The NES tool from Slice 8 moves behind this interface.
+- The NES tool from Slice 14 moves behind this interface.
 - **Swing test** (Wii-tennis-like): swing speed and direction from the quaternion's angular velocity, shown as a meter per player. This is used to tune the gyro pipeline.
 
 **Checklist**
@@ -475,12 +739,17 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 ---
 
 ## Later ideas (not scheduled)
+- Video forwarding by viewers: a viewer re-sends a stream it receives when the sender's upload isn't enough. It re-encodes, which adds delay and loses some quality, and a leaving viewer cuts off everyone after it.
+- Several open rooms per device, and moving a room to another signaling server.
 - Connection diagnostics tool beyond the Direct/Relayed label: ICE candidate types, bitrate graph.
 - PWA manifest and share target, so "Share → PeerKit" from the Android gallery sends a file directly.
 - Clipboard sync (desktop paste goes straight to the phone).
 - iOS Safari: DeviceOrientation permission prompt, autoplay rules, download quirks.
 
 ## Risks to keep in mind
+- **Rooms without a host** depend on the anchor handover (Slice 7 spike): an anchor that drops off the network may hold the room's peer ID for up to the server's alive timeout, and newcomers wait that long.
+- **Upload in rooms:** the sender of a stream sends one copy per viewer. With about 6 members that's fine on home internet and heavy on mobile data.
+- **No removal:** anyone who ever had a room code can rejoin and read the room's documents, chat and kept files. Creating a new room is the only way to exclude someone.
 - **Public 0.peerjs.com** is shared and sometimes unreliable. The Slice 2 "Test connection" button and readable errors help tell a broker problem from an app bug.
 - **Android Chrome in the background** suspends timers and may drop WebRTC. Wake Lock and reconnect cover most of this, but a locked phone isn't a supported state for streaming.
 - **peerjs upgrade** from the old vendored build to 1.5+: serialization defaults changed. File transfer should rely only on the `raw` channel with manual chunking so it doesn't depend on library internals.

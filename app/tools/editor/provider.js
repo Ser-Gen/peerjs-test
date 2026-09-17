@@ -5,138 +5,192 @@ const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
 const PART_CHARS = 12000; // base64url characters per message; peerjs refuses JSON messages over ~16 KB
 const MAX_PARTS = 4096; // about 36 MB of binary
-const HIGH_WATER = 256 * 1024; // don't pile more than this on the control connection: pings share it
+const HIGH_WATER = 256 * 1024; // don't pile more than this on a control connection: pings share it
 const PACE_MS = 50;
 
 /*
  * Protocol (ch: 'doc'). y-protocols messages as in y-websocket: [varUint 0 = sync | 1 = awareness][payload].
  *   msg  {data}                   one message, base64url
  *   part {id, part, parts, data}  a long message in base64url slices, sent in order
- * On every link up both sides send sync step 1 and their awareness state, so only missing changes cross
- * and edits made while apart merge. Updates are sent even between link up and the 'connected' state:
- * the other side may already have answered our state, and a dropped update would wait for the next link.
+ * On every link up both sides send sync step 1 and their awareness, so only missing changes cross and
+ * edits made while apart merge. Every member links to every other, so updates normally go straight to all.
+ * When two members aren't linked (as far as the room knows), a member linked to both forwards what one sends;
+ * Yjs ignores anything it already has.
  */
 
-/**
- * Keeps one Y.Doc and its Awareness in sync with the paired device over the session's control channel.
- * `lib` is the vendor/editor.js module. Events: 'synced' after the first sync step 2 of a link.
- */
-export class DocProvider extends Emitter {
-	constructor({ lib, session, doc, awareness }) {
-		super();
-		this.lib = lib;
-		this.session = session;
-		this.doc = doc;
-		this.awareness = awareness;
-		this.connected = false;
+/** One link's sending queue and receiving state. It is also the Yjs origin of what arrives on it. */
+class LinkState {
+	constructor(provider, member) {
+		this.provider = provider;
+		this.peerId = member.peerId;
 		this.synced = false;
 		this.queue = [];
 		this.flushTimer = null;
 		this.nextId = 1;
 		this.incoming = null; // { id, parts, chunks } of a split message
-		this.remoteClients = new Set();
+	}
+}
+
+/**
+ * Keeps one Y.Doc and its Awareness in sync with every member of the room.
+ * `lib` is the vendor/editor.js module. Events: 'synced' after the first sync step 2 from anyone.
+ */
+export class DocProvider extends Emitter {
+	constructor({ lib, room, doc, awareness }) {
+		super();
+		this.lib = lib;
+		this.room = room;
+		this.doc = doc;
+		this.awareness = awareness;
+		this.synced = false;
+		this.links = new Map(); // peerId → LinkState
+		this.heardVia = new Map(); // awareness client ID → Set of peer IDs it came through
 
 		this.onUpdate = (update, origin) => {
-			if (origin !== this) this.sendSync(encoder => lib.syncProtocol.writeUpdate(encoder, update));
+			const from = origin instanceof LinkState && origin.provider === this ? origin.peerId : null;
+			this.sendSync(encoder => lib.syncProtocol.writeUpdate(encoder, update), from);
 		};
 		this.onAwareness = ({ added, updated, removed }, origin) => {
-			if (origin === this) {
-				for (const id of [...added, ...updated]) this.remoteClients.add(id);
-				for (const id of removed) this.remoteClients.delete(id);
+			const changed = [...added, ...updated, ...removed];
+			if (origin instanceof LinkState && origin.provider === this) {
+				for (const id of [...added, ...updated]) {
+					if (!this.heardVia.has(id)) this.heardVia.set(id, new Set());
+					this.heardVia.get(id).add(origin.peerId);
+				}
+				for (const id of removed) this.heardVia.delete(id);
+				this.sendAwareness(changed, origin.peerId);
 				return;
 			}
-			// 1-to-1: only our own state goes out; the other device knows its own.
-			if ([...added, ...updated, ...removed].includes(doc.clientID)) this.sendAwareness();
+			if (origin === this) return; // states dropped with a link: the others time out by themselves
+			// Our own state: every member gets it from us directly.
+			if (changed.includes(doc.clientID)) this.sendAwareness([doc.clientID]);
 		};
 		doc.on('update', this.onUpdate);
 		awareness.on('update', this.onAwareness);
 		this.unsubscribe = [
-			session.onMessage(CH.DOC, msg => this.receive(msg)),
-			session.on('state', () => this.onState()),
+			room.on(`msg:${CH.DOC}`, (msg, member) => this.receive(msg, member)),
+			room.on('link-up', member => this.linkUp(member)),
+			room.on('link-down', member => this.linkDown(member)),
+			room.on('links', member => this.onLinksChanged(member)),
 		];
-		this.onState();
+		for (const member of room.members) this.linkUp(member);
 	}
 
 	destroy() {
-		// Tell the other device our cursor is gone before letting go.
+		// Tell the others our cursor is gone before letting go.
+		this.destroying = true;
 		this.lib.awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], 'destroy');
 		this.unsubscribe.forEach(fn => fn());
 		this.doc.off('update', this.onUpdate);
 		this.awareness.off('update', this.onAwareness);
-		clearTimeout(this.flushTimer);
-		this.dropRemote();
+		for (const member of [...this.links.keys()]) this.linkDown({ peerId: member });
 	}
 
-	onState() {
-		const connected = this.session.state === 'connected';
-		if (connected === this.connected) return;
-		this.connected = connected;
-		if (connected) {
-			this.sendSync(encoder => this.lib.syncProtocol.writeSyncStep1(encoder, this.doc));
-			// Re-setting the state bumps its clock, so the other device accepts it even if it saw this clock before.
-			const state = this.awareness.getLocalState();
-			if (state) this.awareness.setLocalState(state);
-			return;
+	linkUp(member) {
+		if (this.links.has(member.peerId)) return this.links.get(member.peerId);
+		const link = new LinkState(this, member);
+		this.links.set(member.peerId, link);
+		this.enqueue(link, this.encodeSync(encoder => this.lib.syncProtocol.writeSyncStep1(encoder, this.doc)));
+		// Everyone we know about, so it also learns of members it isn't linked to.
+		const clients = [...this.awareness.getStates().keys()];
+		if (clients.length) this.enqueue(link, this.encodeAwareness(clients));
+		return link;
+	}
+
+	linkDown(member) {
+		const link = this.links.get(member.peerId);
+		if (!link) return;
+		this.links.delete(member.peerId);
+		clearTimeout(link.flushTimer);
+		link.queue = [];
+		// States that only came through this link are gone. Forget their clocks too: after a reconnect
+		// the same state may come again with the same clock.
+		const gone = [];
+		for (const [client, via] of this.heardVia) {
+			via.delete(member.peerId);
+			if (!via.size) gone.push(client);
 		}
-		// The next link starts over with step 1, which recovers anything that was still queued.
-		this.synced = false;
-		this.queue = [];
-		clearTimeout(this.flushTimer);
-		this.flushTimer = null;
-		this.incoming = null;
-		this.dropRemote();
+		for (const client of gone) this.heardVia.delete(client);
+		if (gone.length) {
+			this.lib.awarenessProtocol.removeAwarenessStates(this.awareness, gone, this);
+			for (const client of gone) this.awareness.meta.delete(client);
+		}
+		// What the gone member sent us last may not have arrived; the others have it.
+		if (!this.destroying) {
+			const step1 = this.encodeSync(encoder => this.lib.syncProtocol.writeSyncStep1(encoder, this.doc));
+			for (const other of this.links.values()) this.enqueue(other, step1);
+		}
 	}
 
-	dropRemote() {
-		const clients = [...this.remoteClients];
-		if (clients.length) this.lib.awarenessProtocol.removeAwarenessStates(this.awareness, clients, this);
-		// Forget their clocks too: after a reconnect the same state may come again with the same clock.
-		for (const id of clients) this.awareness.meta.delete(id);
-		this.remoteClients.clear();
+	/** A member lost or gained direct links: it may now need what we forward, cursors included. */
+	onLinksChanged(member) {
+		const link = this.links.get(member.peerId);
+		const clients = [...this.awareness.getStates().keys()];
+		if (link && clients.length) this.enqueue(link, this.encodeAwareness(clients));
 	}
 
 	// --- sending ---
 
-	sendSync(write) {
+	encodeSync(write) {
 		const { encoding } = this.lib;
 		const encoder = encoding.createEncoder();
 		encoding.writeVarUint(encoder, MSG_SYNC);
 		write(encoder);
-		this.enqueue(encoding.toUint8Array(encoder));
+		return encoding.toUint8Array(encoder);
 	}
 
-	sendAwareness() {
+	encodeAwareness(clients) {
 		const { encoding, awarenessProtocol } = this.lib;
 		const encoder = encoding.createEncoder();
 		encoding.writeVarUint(encoder, MSG_AWARENESS);
-		encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(this.awareness, [this.doc.clientID]));
-		this.enqueue(encoding.toUint8Array(encoder));
+		encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(this.awareness, clients));
+		return encoding.toUint8Array(encoder);
 	}
 
-	enqueue(bytes) {
-		if (!this.session.ctl?.open) return; // not linked: the next link's step 1 covers it
+	/** To every link, or when it came from `from`, to those that aren't linked to `from`. */
+	targets(from) {
+		return [...this.links.values()].filter(link => link.peerId !== from && !(from && this.room.isLinked(from, link.peerId)));
+	}
+
+	sendSync(write, from = null) {
+		const targets = this.targets(from);
+		if (!targets.length) return;
+		const bytes = this.encodeSync(write);
+		for (const link of targets) this.enqueue(link, bytes);
+	}
+
+	sendAwareness(clients, from = null) {
+		const targets = this.targets(from);
+		if (!targets.length) return;
+		const bytes = this.encodeAwareness(clients);
+		for (const link of targets) this.enqueue(link, bytes);
+	}
+
+	enqueue(link, bytes) {
 		const data = toBase64url(bytes);
 		if (data.length <= PART_CHARS) {
-			this.queue.push({ type: 'msg', data });
+			link.queue.push({ type: 'msg', data });
 		} else {
-			const id = this.nextId++;
+			const id = link.nextId++;
 			const parts = Math.ceil(data.length / PART_CHARS);
 			for (let part = 0; part < parts; part++) {
-				this.queue.push({ type: 'part', id, part, parts, data: data.slice(part * PART_CHARS, (part + 1) * PART_CHARS) });
+				link.queue.push({ type: 'part', id, part, parts, data: data.slice(part * PART_CHARS, (part + 1) * PART_CHARS) });
 			}
 		}
-		if (!this.flushTimer) this.flush();
+		if (!link.flushTimer) this.flush(link);
 	}
 
-	flush() {
-		this.flushTimer = null;
-		while (this.queue.length) {
-			if (this.session.controlBuffered > HIGH_WATER) {
-				this.flushTimer = setTimeout(() => this.flush(), PACE_MS);
+	flush(link) {
+		link.flushTimer = null;
+		while (link.queue.length) {
+			if (this.links.get(link.peerId) !== link) return;
+			if (this.room.controlBuffered(link.peerId) > HIGH_WATER) {
+				link.flushTimer = setTimeout(() => this.flush(link), PACE_MS);
 				return;
 			}
-			if (!this.session.send(CH.DOC, this.queue.shift())) {
-				this.queue = [];
+			if (!this.room.send(CH.DOC, link.queue.shift(), link.peerId)) {
+				// The link is going down; the next link up starts over with step 1.
+				link.queue = [];
 				return;
 			}
 		}
@@ -144,29 +198,31 @@ export class DocProvider extends Emitter {
 
 	// --- receiving ---
 
-	receive(msg) {
+	receive(msg, member) {
+		const link = this.links.get(member.peerId) ?? (this.room.member(member.peerId) ? this.linkUp(member) : null);
+		if (!link) return;
 		if (msg.type === 'msg') {
-			if (typeof msg.data === 'string') this.handle(msg.data);
+			if (typeof msg.data === 'string') this.handle(link, msg.data);
 			return;
 		}
 		if (msg.type !== 'part') return;
 		const { id, part, parts, data } = msg;
 		if (!Number.isInteger(parts) || parts < 2 || parts > MAX_PARTS || !Number.isInteger(part) || part < 0 || part >= parts || typeof data !== 'string') return;
-		if (part === 0) this.incoming = { id, parts, chunks: [] };
-		const incoming = this.incoming;
+		if (part === 0) link.incoming = { id, parts, chunks: [] };
+		const incoming = link.incoming;
 		// Parts of one message arrive in order on the reliable channel; anything else is a leftover.
 		if (!incoming || incoming.id !== id || incoming.parts !== parts || incoming.chunks.length !== part) {
-			this.incoming = null;
+			link.incoming = null;
 			return;
 		}
 		incoming.chunks.push(data);
 		if (incoming.chunks.length === parts) {
-			this.incoming = null;
-			this.handle(incoming.chunks.join(''));
+			link.incoming = null;
+			this.handle(link, incoming.chunks.join(''));
 		}
 	}
 
-	handle(data) {
+	handle(link, data) {
 		const { encoding, decoding, syncProtocol, awarenessProtocol } = this.lib;
 		try {
 			const decoder = decoding.createDecoder(fromBase64url(data));
@@ -174,14 +230,17 @@ export class DocProvider extends Emitter {
 			if (kind === MSG_SYNC) {
 				const reply = encoding.createEncoder();
 				encoding.writeVarUint(reply, MSG_SYNC);
-				const type = syncProtocol.readSyncMessage(decoder, reply, this.doc, this);
-				if (encoding.length(reply) > 1) this.enqueue(encoding.toUint8Array(reply)); // step 1 is answered with step 2
-				if (type === syncProtocol.messageYjsSyncStep2 && !this.synced) {
-					this.synced = true;
-					this.emit('synced');
+				const type = syncProtocol.readSyncMessage(decoder, reply, this.doc, link);
+				if (encoding.length(reply) > 1) this.enqueue(link, encoding.toUint8Array(reply)); // step 1 is answered with step 2
+				if (type === syncProtocol.messageYjsSyncStep2) {
+					link.synced = true;
+					if (!this.synced) {
+						this.synced = true;
+						this.emit('synced');
+					}
 				}
 			} else if (kind === MSG_AWARENESS) {
-				awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(decoder), this);
+				awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(decoder), link);
 			}
 		} catch (err) {
 			console.warn('[peerkit] bad doc message', err);

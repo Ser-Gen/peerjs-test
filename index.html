@@ -12,14 +12,14 @@
 	<div class="app">
 		<header class="topbar">
 			<div class="brand">PeerKit</div>
-			<div id="status" class="status" data-state="idle">
+			<div id="status" class="status" data-state="idle" hidden>
 				<span class="dot" aria-hidden="true"></span>
-				<span id="status-text">Starting…</span>
+				<span id="status-text"></span>
 				<span id="rtt" class="rtt" title="Round-trip time" hidden></span>
 				<span id="route" class="route" hidden></span>
 			</div>
 			<button id="open-settings" class="icon-btn" type="button" aria-label="Settings" aria-pressed="false"></button>
-			<button id="leave" class="btn ghost small" type="button">New session</button>
+			<button id="leave" class="btn ghost small" type="button" hidden>Leave</button>
 		</header>
 
 		<div id="banner" class="banner" role="status" hidden>
@@ -34,8 +34,8 @@
 		</div>
 
 		<main>
-			<section id="view-pair" class="view pair" hidden>
-				<div id="pair-root" class="pair-inner"></div>
+			<section id="view-start" class="view start-view" hidden>
+				<div id="start-root" class="start-inner"></div>
 				<details class="legacy">
 					<summary>Old demos</summary>
 					<p>
@@ -59,6 +59,7 @@
 			</section>
 
 			<section id="view-session" class="view session" hidden>
+				<div id="room-bar" class="room-bar"></div>
 				<div id="tool-host" class="tool-host"></div>
 			</section>
 
