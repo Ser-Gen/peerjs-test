@@ -268,6 +268,23 @@ if (MODE === 'start') {
 	check('the feed says the member left', [...document.querySelectorAll('.sys')].some(el => el.textContent.startsWith('Phone left')));
 	await until('this device takes over the anchor', () => window.peerkit.isAnchor, 6000);
 
+	// Sharing with nobody in the room: the capture starts and waits for the first person to arrive.
+	buttonByText($('#tabs'), 'Stream').click();
+	check('the share buttons work in an empty room', !buttonByText($('.stream'), 'Share camera').disabled);
+	buttonByText($('.stream'), 'Share camera').click();
+	await until('the camera starts with no viewer', () => $('.stream .live')?.textContent.includes('waiting for someone to join'));
+	check('and no picker was shown', !lastDialog());
+
+	const tablet = new Room({ code, ice: { forRoom: null, adopt: () => false }, identity: { id: 'cccccccccccccccc', name: 'Tablet' } });
+	const tabletCalls = [];
+	tablet.on('call', call => tabletCalls.push(call));
+	tablet.start();
+	await until('a newcomer gets the stream that was waiting', () => tabletCalls.some(call => call.metadata?.kind === 'camera'), 8000);
+	await until('and the bar names the viewer', () => $('.stream .live')?.textContent === 'Sharing camera with Tablet');
+	buttonByText($('.stream'), 'Stop').click();
+	await tablet.leave();
+	await until('stopping leaves the share buttons ready again', () => Boolean(buttonByText($('.stream'), 'Share camera')));
+
 	// Leave.
 	$('#leave').click();
 	dialog = lastDialog();

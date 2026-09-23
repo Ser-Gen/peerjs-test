@@ -926,6 +926,12 @@ h2 {
 	background: var(--warn);
 }
 
+/* Capturing with nobody in the room yet: not live, just ready. */
+.live[data-waiting]::before {
+	background: var(--muted);
+	animation: none;
+}
+
 .input.select {
 	width: auto;
 	min-height: 36px;

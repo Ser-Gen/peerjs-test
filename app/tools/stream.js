@@ -14,7 +14,8 @@ const MUSIC_BITRATE = 256000;
 const KIND_NOUN = { camera: 'camera', screen: 'shared screen' };
 
 /*
- * For now a stream goes to one member of the room (the choice is made when it starts).
+ * For now a stream goes to one member of the room (the choice is made when it starts). Started in an empty
+ * room it waits with no viewer, and the first member to arrive gets it.
  *
  * Protocol (ch: 'stream'). Media goes over a peerjs MediaConnection with metadata {id, kind}; the
  * receiver answers without a stream. peerjs only closes a call once ICE fails, which takes long,
@@ -224,11 +225,18 @@ class StreamTool {
 	}
 
 	onLinkUp(member) {
-		// The same device again, possibly with a new peer ID after a reload.
 		const out = this.out;
 		if (out?.paused && out.toDevice === member.deviceId) {
+			// The same device again, possibly with a new peer ID after a reload.
 			out.to = member.peerId;
 			this.resumeOutgoing();
+		} else if (out && !out.to) {
+			// Started with nobody here: the first one to arrive gets it.
+			out.to = member.peerId;
+			out.toDevice = member.deviceId;
+			out.toName = member.name;
+			this.callRemote(out);
+			toast(`Sharing with ${member.name}`);
 		}
 		this.render();
 	}
@@ -240,11 +248,14 @@ class StreamTool {
 		this.render();
 	}
 
-	/** Who gets the stream: the only other member, or the one picked from a list (a tap there counts as the user's gesture). */
+	/**
+	 * Who gets the stream: nobody yet in an empty room, the only other member, or the one picked from a
+	 * list (a tap there counts as the user's gesture).
+	 */
 	chooseMember(kind, start) {
 		const members = this.room.members;
 		if (!members.length) {
-			toast('Nobody else is in the room');
+			start(null);
 			return;
 		}
 		if (members.length === 1) {
@@ -285,7 +296,7 @@ class StreamTool {
 		this.render();
 		try {
 			const stream = await getCamera(this.prefs);
-			if (!this.room.member(member.peerId)) return stopTracks(stream);
+			if (member && !this.room.member(member.peerId)) return stopTracks(stream);
 			stream.getVideoTracks()[0].contentHint = 'motion';
 			for (const track of stream.getAudioTracks()) track.enabled = this.prefs.mic && !this.voiceOn;
 			this.beginOutgoing('camera', stream, member);
@@ -306,7 +317,7 @@ class StreamTool {
 		try {
 			// Nothing may be awaited before this call: it needs the click's user activation.
 			const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: SCREEN_AUDIO });
-			if (!this.room.member(member.peerId)) return stopTracks(stream);
+			if (member && !this.room.member(member.peerId)) return stopTracks(stream);
 			stream.getVideoTracks()[0].contentHint = 'detail';
 			for (const track of stream.getAudioTracks()) track.contentHint = 'music';
 			this.beginOutgoing('screen', stream, member);
@@ -334,9 +345,10 @@ class StreamTool {
 		const out = (this.out = {
 			id: randomId(4),
 			kind,
-			to: member.peerId,
-			toDevice: member.deviceId,
-			toName: member.name,
+			// Null while nobody is in the room: onLinkUp fills them in for whoever arrives first.
+			to: member?.peerId ?? null,
+			toDevice: member?.deviceId ?? null,
+			toName: member?.name ?? null,
 			stream,
 			call: null,
 			paused: false,
@@ -348,7 +360,7 @@ class StreamTool {
 		this.resume = null;
 		writeResume(kind);
 		this.preview.srcObject = stream;
-		this.callRemote(out);
+		if (out.to) this.callRemote(out);
 		this.render();
 	}
 
@@ -398,7 +410,7 @@ class StreamTool {
 		if (!out) return;
 		this.out = null;
 		clearTimeout(out.timer);
-		if (notify) this.room.send(CH.STREAM, { type: 'stop', id: out.id }, out.to);
+		if (notify && out.to) this.room.send(CH.STREAM, { type: 'stop', id: out.id }, out.to);
 		closeCall(out);
 		stopTracks(out.stream);
 		this.unlock(out);
@@ -700,7 +712,7 @@ class StreamTool {
 
 	renderResume(connected, out) {
 		const kind = this.resume;
-		const show = Boolean(kind) && connected && !out;
+		const show = Boolean(kind) && !out;
 		this.resumeBar.hidden = !show;
 		if (!show) return;
 		this.resumeBar.replaceChildren(
@@ -715,11 +727,12 @@ class StreamTool {
 
 	renderBar(connected, out) {
 		if (!out) {
-			const disabled = !connected || this.busy || !canCapture();
+			const disabled = this.busy || !canCapture();
 			this.bar.replaceChildren(...[
 				button('Share camera', 'camera', () => this.chooseMember('camera', member => this.startCamera(member)), 'btn'),
 				canShareScreen() && button('Share screen', 'monitor', () => this.chooseMember('screen', member => this.startScreen(member)), 'btn'),
 				!canCapture() && h('span', { class: 'hint' }, 'Sharing needs HTTPS.'),
+				canCapture() && !connected && h('span', { class: 'hint' }, 'You can start now: whoever joins first sees it.'),
 			].filter(Boolean));
 			for (const control of this.bar.querySelectorAll('button')) control.disabled = disabled;
 			return;
@@ -727,10 +740,13 @@ class StreamTool {
 
 		const audio = out.stream.getAudioTracks();
 		const micOn = Boolean(audio[0]?.enabled);
-		const label = out.paused
-			? `Paused until ${out.toName} is back…`
-			: out.kind === 'screen' ? `Sharing your screen with ${out.toName}` : `Sharing camera with ${out.toName}`;
-		const items = [h('span', { class: 'live', 'data-paused': out.paused }, label)];
+		const what = out.kind === 'screen' ? 'your screen' : 'your camera';
+		const label = !out.to
+			? `Ready to share ${what} — waiting for someone to join`
+			: out.paused
+				? `Paused until ${out.toName} is back…`
+				: out.kind === 'screen' ? `Sharing your screen with ${out.toName}` : `Sharing camera with ${out.toName}`;
+		const items = [h('span', { class: 'live', 'data-paused': out.paused, 'data-waiting': !out.to }, label)];
 		if (out.kind === 'camera') {
 			if (this.cameraCount > 1) items.push(iconButton('switch-camera', 'Switch camera', () => this.switchCamera()));
 			items.push(iconButton(micOn ? 'mic' : 'mic-off',

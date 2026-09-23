@@ -454,16 +454,16 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - **TURN**: any member with a secret sends 7-day credentials in `welcome` and on every link up. Others take credentials only if they expire later and pass them on; the room entry stores the newest.
 - **Tools**:
   - **Transfer**: text goes to everyone and shows the sender's name. A file goes to each member over its own link, with one card and a line per member. Join and leave show in the feed.
-  - **Stream**: goes to one member, picked from a list when there are several. It pauses and resumes with that device, also after it reloads.
+  - **Stream**: goes to one member, picked from a list when there are several. It pauses and resumes with that device, also after it reloads. Since 2026-09-23 it can also start in an empty room and waits there for the first arrival.
   - **Editor**: one provider for all links. Updates and cursors from a member are forwarded to members not linked to it, going by the `links` each member announces. A link going down resyncs with the others.
 - `PROTOCOL_VERSION` 4. One open room per device (Web Lock `peerkit:room`). Settings says a room stays on its link's server; the selected server is for new rooms and typed codes.
 - Differences from the plan:
   - The limit is 8 devices, not about 6.
   - Transfer text and files reach only directly linked members; forwarding covers documents and cursors, and the synced chat comes in Slice 9.
   - The Direct/Relayed route per member is in the chip tooltip.
-- Checked in Node, not in a browser. Since 2026-09-23 these tests live in `test/` and run with `node test/run.mjs` (177 checks in all):
+- Checked in Node, not in a browser. Since 2026-09-23 these tests live in `test/` and run with `node test/run.mjs` (183 checks in all):
   - `room-test.mjs`: a room simulation on a fake peerjs network with a virtual clock (30 checks, 20 runs in a row).
-  - `dom/app-test.mjs`: the whole app in jsdom with a second, headless member (40 checks in a room, 14 on the start screen).
+  - `dom/app-test.mjs`: the whole app in jsdom with a second, headless member (46 checks in a room, 14 on the start screen).
   - `editor-sync-test.mjs`: the editor provider with 3–4 members, including forwarding (14 checks).
   - `dom/editor-test.mjs`: the editor UI with two members (26 checks).
 
@@ -825,6 +825,16 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 - [ ] Share a photo with no room open: the start screen says it is waiting, and it is still sent after creating a room.
 - [ ] Turn off Wi-Fi and mobile data and open the installed app: the start screen loads (it can't reach the signaling server, which is expected).
 - [ ] After a deploy, reloading twice picks up the new version (the version in Settings → About changes).
+
+### Sharing before anyone arrives (2026-09-23, 0.8.1)
+
+**Why:** the Share camera and Share screen buttons were dead while you were alone in the room, which is exactly when you set a share up — you make a room, start the screen share, then send the invite.
+
+**As built**
+- Capture starts with no viewer: the preview runs, the bar says "Ready to share your screen — waiting for someone to join" with a grey dot instead of the live one, and Stop works as usual.
+- The first member to arrive gets it (`onLinkUp` fills in the viewer, calls and says "Sharing with *name*"). With several already in the room the picker is unchanged.
+- The stream is a `stop` message to one member, so it is only sent when there is one; the resume bar after a reload no longer waits for company either.
+- Covered in the jsdom app test: the buttons work while alone, the bar says it is waiting, and a newcomer receives the camera call.
 
 ## Backlog (to triage)
 
