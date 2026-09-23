@@ -1,11 +1,12 @@
 // Bump when messages change incompatibly; members with different versions refuse to link.
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 // Message channels on the control connection. Every message is `{ ch, type, ...payload }`.
 export const CH = {
 	SYS: 'sys', // links, room membership, ping / pong
 	TRANSFER: 'transfer', // text + file offers
 	STREAM: 'stream', // camera / screen start, stop, close (media itself goes over a peerjs call)
+	VOICE: 'voice', // who is in the room's voice conversation (app/voice.js)
 	DOC: 'doc', // shared editor: Yjs sync and awareness (app/tools/editor/provider.js)
 };
 
@@ -29,6 +30,15 @@ export const CH = {
  *   turn    {turn}      temporary TURN credentials {host, port, tlsPort, username, credential}
  *   ping / pong {t}
  *   bye     {}          the sender leaves the room on purpose
+ */
+
+/*
+ * Media calls carry `metadata.kind`: 'camera' and 'screen' belong to the Stream tool, 'voice' to app/voice.js.
+ * A call of an unknown kind is refused. This is why version 4 and version 5 refuse to link: a version-4
+ * device answers every call as a stream and would put a voice call on its video stage.
+ *
+ * Voice (ch: 'voice'):
+ *   state {on, muted, mic}   the sender's voice state; sent on every link up and whenever it changes
  */
 
 // peerjs DataConnection labels.

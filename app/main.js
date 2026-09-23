@@ -2,6 +2,9 @@ import { MAX_MEMBERS, Room, describeError } from './room.js';
 import { newRoomCode, parseLink, roomIds, roomLink, roomStore } from './rooms.js';
 import { PUBLIC_PROFILE, isPublic, peerOptions, profiles, sameConnection } from './settings.js';
 import { IceConfig } from './turn.js';
+import { dropShare, peekShare, takeShare } from './share.js';
+import { registerServiceWorker } from './pwa.js';
+import { Voice } from './voice.js';
 import { button, h, icon, openDialog, toast } from './ui/dom.js';
 import { renderQR } from './ui/qr.js';
 import { SettingsView } from './ui/settings-view.js';
@@ -53,7 +56,7 @@ const els = {
 // A room link opens that room (and leaves the address bar clean); otherwise the room this device had open.
 const link = parseLink(location.hash);
 let bootError = null;
-if (link.kind !== 'none') history.replaceState(null, '', location.pathname + location.search);
+if (link.kind !== 'none' || new URLSearchParams(location.search).has('share')) history.replaceState(null, '', cleanUrl());
 if (link.kind === 'legacy') bootError = 'legacy-link';
 else if (link.kind === 'room' && link.error) bootError = link.error;
 else if (link.kind === 'room') roomStore.open({ code: link.code, profile: link.profile ?? PUBLIC_PROFILE, turn: link.turn });
@@ -73,6 +76,8 @@ const room = entry
 	})
 	: null;
 
+const voice = room ? new Voice(room) : null;
+
 let everOpen = false;
 let toolsMounted = false;
 let tabsReady = false;
@@ -82,6 +87,9 @@ let claim = 0;
 let knownNames = '';
 let inviteDialog = null;
 let activeBeforeSettings = null;
+let sharePending = null; // what "Share → PeerKit" handed over, waiting for the Transfer tool
+let shareWaiting = null; // the same share, described, while there is no room to send it to
+const shareListeners = new Set();
 
 const settingsView = new SettingsView(els.settings, { onClose: closeSettings, sessionProfile: () => profile, ice });
 if (!room && !bootError) {
@@ -104,13 +112,23 @@ if (room) {
 	});
 	room.on('turn', turn => roomStore.update(code, { turn }));
 	ice.on('change', () => room.shareTurn()); // renewed credentials
+	voice.on('change', renderRoomBar);
 	window.peerkit = room; // handy for debugging from the console
 }
 profiles.on('change', renderNotice);
+registerServiceWorker();
+// A share is taken out of the cache only once a room is open, so it survives the reload that opening one does.
+if (!room) peekShare().then(share => {
+	shareWaiting = share;
+	render();
+});
 
 // Opening another room link in this tab starts over with it.
 window.addEventListener('hashchange', () => location.reload());
-window.addEventListener('pagehide', () => room?.destroy());
+window.addEventListener('pagehide', () => {
+	voice?.destroy();
+	room?.destroy();
+});
 window.addEventListener('pageshow', e => {
 	if (e.persisted) location.reload();
 });
@@ -199,6 +217,7 @@ function render() {
 		showMessage({ title, text, server: false, actions: [button('Start page', null, goToStart, 'btn primary')] });
 	} else if (!room) {
 		view = 'start';
+		banner = shareBanner();
 	} else if (!everOpen) {
 		view = 'message';
 		renderJoining();
@@ -261,20 +280,117 @@ function renderRtt() {
 
 function renderRoomBar() {
 	if (!room || !everOpen) return;
-	const chip = (member, label, title) => h('span', { class: 'member-chip', style: `--who: ${member.color}`, title }, label);
+	const chip = (member, label, title, mark) => h('span', { class: 'member-chip', 'data-voice': mark, style: `--who: ${member.color}`, title },
+		mark ? icon(mark === 'muted' ? 'mic-off' : 'mic') : null,
+		label);
 	const members = room.members;
-	const chips = [chip(room.self, 'You', `${room.self.name} (this device)`)];
+	const chips = [chip(room.self, 'You', `${room.self.name} (this device)`, voice.selfMark)];
 	for (const member of members) {
 		const route = member.route ? (member.route.relayed ? 'relayed' : 'direct') : null;
 		const details = [member.rtt != null && `${member.rtt} ms`, route].filter(Boolean).join(', ');
-		chips.push(chip(member, member.name, details ? `${member.name}: ${details}` : member.name));
+		chips.push(chip(member, member.name, details ? `${member.name}: ${details}` : member.name, voice.mark(member.peerId)));
 	}
 	const connecting = room.connecting;
 	els.roomBar.replaceChildren(
 		h('div', { class: 'members', role: 'list', 'aria-label': 'People in the room' }, chips),
 		connecting ? h('span', { class: 'members-note' }, `Connecting to ${connecting}…`) : null,
 		!members.length && !connecting ? h('span', { class: 'members-note' }, 'Nobody else is here yet') : null,
-		button('Invite', 'share', showInvite, `btn small${members.length ? '' : ' primary'} push`));
+		button('Invite', 'share', showInvite, `btn small${members.length ? '' : ' primary'} push`),
+		renderVoice());
+}
+
+// --- voice ---
+
+/** The voice row: one tap from every tool, because muting must never be somewhere else. */
+function renderVoice() {
+	const others = voice.others.length;
+	if (!voice.active) {
+		return h('div', { class: 'voice-bar' },
+			button(voice.busy ? 'Asking…' : 'Join voice', 'mic', joinVoice, `btn small${others ? ' primary' : ''}`),
+			h('span', { class: 'voice-note' }, others ? `${others} in voice` : 'Nobody is talking yet'));
+	}
+	const note = others
+		? `${voice.count} in voice${voice.listening ? ' · listening only' : ''}`
+		: voice.listening
+			? 'Listening only'
+			: 'Waiting for someone to join voice';
+	return h('div', { class: 'voice-bar', 'data-mine': voice.selfMark },
+		voice.listening
+			? button('Use microphone', 'mic', useMicrophone, 'btn small')
+			: button(voice.muted ? 'Unmute' : 'Mute', voice.muted ? 'mic-off' : 'mic', () => voice.toggleMute(), `btn small${voice.muted ? ' primary' : ''}`),
+		h('span', { class: 'voice-note' }, note),
+		voice.blocked ? button('Tap for sound', 'volume-x', () => voice.resumeAudio(), 'btn small primary') : null,
+		others ? h('button', { type: 'button', class: 'icon-btn small', title: 'Voice settings', 'aria-label': 'Voice settings', onclick: showVoiceSheet }, icon('chevron-down')) : null,
+		button('Leave voice', null, () => voice.leave(), 'btn small ghost push'));
+}
+
+async function joinVoice() {
+	const note = await voice.join();
+	if (note) toast(note);
+}
+
+async function useMicrophone() {
+	const note = await voice.useMicrophone();
+	if (note) toast(note);
+}
+
+/** Per-member volume, a local mute and the microphone to use: settings for this device only. */
+function showVoiceSheet() {
+	const list = h('ul', { class: 'voice-list' });
+	const mics = h('div', { class: 'field' });
+	const dialog = openDialog(h('div', { class: 'sheet-body' },
+		h('h2', {}, 'Voice'),
+		list,
+		mics,
+		h('p', { class: 'hint' }, 'Volume and mute are for this device: the others still hear that person.'),
+		h('div', { class: 'actions end' }, button('Done', null, () => dialog.close(), 'btn ghost'))));
+
+	const renderList = () => {
+		const others = voice.others;
+		if (!others.length) {
+			list.replaceChildren(h('li', { class: 'hint' }, 'Nobody else is in voice.'));
+			return;
+		}
+		list.replaceChildren(...others.map(peer => {
+			const off = voice.mutedFor(peer.deviceId);
+			const color = room.member(peer.peerId)?.color;
+			const slider = h('input', {
+				type: 'range',
+				min: '0',
+				max: '100',
+				value: String(Math.round(voice.volumeOf(peer.deviceId) * 100)),
+				'aria-label': `Volume for ${peer.name}`,
+				disabled: off,
+				oninput: e => voice.setVolume(peer.deviceId, Number(e.target.value) / 100),
+			});
+			return h('li', { class: 'voice-row' },
+				h('span', { class: 'voice-name', style: color ? `--who: ${color}` : null }, peer.name),
+				h('button', {
+					type: 'button',
+					class: 'icon-btn small',
+					title: off ? `Hear ${peer.name} again` : `Mute ${peer.name} here`,
+					'aria-pressed': String(off),
+					onclick: () => {
+						voice.setPeerMuted(peer.deviceId, !off);
+						renderList();
+					},
+				}, icon(off ? 'volume-x' : 'volume')),
+				slider);
+		}));
+	};
+	renderList();
+
+	voice.microphones().then(list => {
+		if (list.length < 2 || !dialog.open) return;
+		mics.replaceChildren(
+			h('span', {}, 'Microphone'),
+			h('select', { class: 'input select', onchange: e => voice.setMicrophone(e.target.value).then(note => note && toast(note)) },
+				list.map(mic => h('option', { value: mic.id, selected: mic.id === voice.prefs.mic }, mic.label))),
+			h('small', {}, 'A headset that is connected while you talk shows up here.'));
+	});
+
+	const off = room.on('members', renderList);
+	dialog.addEventListener('close', off);
 }
 
 function renderJoining() {
@@ -400,6 +516,7 @@ function showLeave() {
 }
 
 async function leaveRoom(forget) {
+	voice.leave(); // the microphone indicator must go out with the room
 	await room.leave();
 	sessionStorage.removeItem(INVITE_KEY);
 	if (forget) {
@@ -446,6 +563,7 @@ function deleteRoomData(code) {
 /** Back to the start screen. A room that never opened here and wasn't known is dropped from the list. */
 async function goToStart() {
 	if (room) {
+		voice.destroy();
 		room.destroy();
 		if (!everOpen && !roomStore.find(code)?.known) roomStore.forget(code);
 		else roomStore.leave();
@@ -454,8 +572,43 @@ async function goToStart() {
 }
 
 function reloadClean() {
-	history.replaceState(null, '', location.pathname + location.search);
+	history.replaceState(null, '', cleanUrl());
 	location.reload();
+}
+
+/** The address bar without a room link and without the marker the share target adds. */
+function cleanUrl() {
+	const params = new URLSearchParams(location.search);
+	params.delete('share');
+	const search = params.toString();
+	return location.pathname + (search ? `?${search}` : '');
+}
+
+// --- the Android share target ---
+
+function offerShare() {
+	if (!sharePending || !shareListeners.size) return;
+	const share = sharePending;
+	sharePending = null;
+	for (const fn of shareListeners) fn(share);
+}
+
+/** On the start screen a share has nowhere to go yet, so it waits in the cache and says so. */
+function shareBanner() {
+	if (!shareWaiting) return null;
+	const { files, text } = shareWaiting;
+	const what = files.length
+		? `${files.length === 1 ? files[0].name : `${files.length} files`}${text ? ' and text' : ''}`
+		: 'Shared text';
+	return {
+		kind: 'info',
+		text: `${what} is waiting. Open a room to send it.`,
+		action: ['Discard', async () => {
+			shareWaiting = null;
+			await dropShare();
+			render();
+		}],
+	};
 }
 
 // --- settings ---
@@ -492,6 +645,10 @@ function setSettingsOpen(open) {
 function mountTools() {
 	if (toolsMounted) return;
 	toolsMounted = true;
+	takeShare().then(share => {
+		sharePending = share;
+		offerShare();
+	});
 	const panels = TOOLS.map(tool => h('section', { class: 'tool', 'data-tool': tool.id }));
 	const tabs = TOOLS.map((tool, i) => h('button', { type: 'button', onclick: () => select(i) }, tool.title));
 	const showListeners = TOOLS.map(() => new Set());
@@ -521,6 +678,15 @@ function mountTools() {
 			if (panels[i].hidden) tabs[i].classList.add('notify');
 		},
 		visible: () => !panels[i].hidden,
+		/** The room's voice: a tool that carries audio of its own mutes it while this is on. */
+		voiceActive: () => voice.active,
+		onVoiceChange: fn => voice.on('change', fn),
+		/** What Android's "Share → PeerKit" handed over, delivered once, to the tool that asks for it. */
+		onShare: fn => {
+			shareListeners.add(fn);
+			offerShare();
+			return () => shareListeners.delete(fn);
+		},
 		/** Called each time the tool's tab is opened; returns an unsubscribe function. */
 		onShow: fn => {
 			showListeners[i].add(fn);

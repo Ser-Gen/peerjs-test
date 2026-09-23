@@ -199,6 +199,10 @@ h2 {
 	background: color-mix(in srgb, var(--bad) 16%, var(--surface));
 }
 
+.banner[data-kind="info"] {
+	background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+
 .banner span {
 	flex: 1;
 }
@@ -572,6 +576,7 @@ h2 {
 .room-bar {
 	flex: none;
 	display: flex;
+	flex-wrap: wrap; /* the voice row goes under the members */
 	align-items: center;
 	gap: 0.5rem;
 	min-height: 48px;
@@ -605,6 +610,64 @@ h2 {
 
 .room-bar .push {
 	margin-left: auto;
+}
+
+/* Voice: the row under the members, reachable from every tool. */
+.voice-bar {
+	flex-basis: 100%;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	min-height: 36px;
+}
+
+.voice-note {
+	min-width: 0;
+	color: var(--muted);
+	font-size: 0.8rem;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.voice-bar[data-mine="speaking"] .voice-note {
+	color: var(--ok);
+}
+
+/* The others play here. It sits outside the tool panels, so switching tabs never stops the sound. */
+.voice-audio {
+	display: none;
+}
+
+.voice-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.voice-row {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.voice-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: color-mix(in srgb, var(--who, var(--accent)) 75%, var(--text));
+	font-weight: 500;
+}
+
+.voice-row input[type="range"] {
+	flex: none;
+	width: 45%;
+	accent-color: var(--accent);
 }
 
 .member-pick {
@@ -963,6 +1026,33 @@ h2 {
 	font-weight: 600;
 }
 
+/* The files an Android share handed over, listed in the confirmation sheet. */
+.share-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	max-height: 40vh;
+	overflow: auto;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.share-list li {
+	display: flex;
+	justify-content: space-between;
+	gap: 0.75rem;
+	min-width: 0;
+}
+
+.share-list .file-name {
+	min-width: 0;
+}
+
+.share-list .file-size {
+	flex: none;
+}
+
 .file-recipients {
 	display: flex;
 	flex-direction: column;
@@ -1216,6 +1306,22 @@ progress::-moz-progress-bar {
 	text-overflow: ellipsis;
 }
 
+/* Voice marks: a ring while that member speaks, a crossed-out mic when muted. */
+.member-chip[data-voice] .icon {
+	width: 0.85rem;
+	height: 0.85rem;
+	opacity: 0.7;
+}
+
+.member-chip[data-voice="speaking"] {
+	background: color-mix(in srgb, var(--who, var(--accent)) 34%, var(--surface));
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--who, var(--accent)) 55%, transparent);
+}
+
+.member-chip[data-voice="speaking"] .icon {
+	opacity: 1;
+}
+
 .presence-chip::before,
 .member-chip::before {
 	content: "";
@@ -1354,6 +1460,13 @@ progress::-moz-progress-bar {
 	gap: 0.75rem;
 	padding: 1rem 0;
 	border-bottom: 1px solid var(--border);
+}
+
+.version {
+	margin: 0;
+	color: var(--muted);
+	font-size: 0.9rem;
+	font-variant-numeric: tabular-nums;
 }
 
 .settings-section:last-child {

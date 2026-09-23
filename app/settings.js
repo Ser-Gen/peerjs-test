@@ -1,4 +1,5 @@
 /* global Peer */
+import { APP_VERSION } from './version.js';
 import { Emitter } from './emitter.js';
 import { randomId } from './util.js';
 
@@ -243,7 +244,7 @@ class ProfileStore extends Emitter {
 	/** `extra` adds top-level fields, e.g. `{ turn }`. */
 	exportJSON(extra = {}) {
 		const profiles = this._data.profiles.map(({ id, ...profile }) => profile);
-		return JSON.stringify({ app: 'peerkit', version: SETTINGS_VERSION, profiles, ...extra }, null, 2);
+		return JSON.stringify({ app: 'peerkit', appVersion: APP_VERSION, version: SETTINGS_VERSION, profiles, ...extra }, null, 2);
 	}
 
 	/**

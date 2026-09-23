@@ -1,0 +1,10 @@
+{
+	"name": "peerkit-test",
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"fake-indexeddb": "6.2.5",
+		"jsdom": "30.0.1"
+	},
+	"description": "Node tests for PeerKit; node_modules is not committed (npm install here)."
+}

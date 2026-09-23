@@ -1,5 +1,5 @@
 import { CH } from '../protocol.js';
-import { button, h, icon, linkify, timeLabel, toast } from '../ui/dom.js';
+import { button, h, icon, linkify, openDialog, timeLabel, toast } from '../ui/dom.js';
 import { copyText, formatBytes, formatDuration, formatSpeed, wakeLock } from '../util.js';
 
 const TEXT_PART_CHARS = 3000; // peerjs JSON messages must stay under ~16 KB
@@ -113,6 +113,8 @@ class TransferTool {
 			room.on('link-down', (member, reason) => this.onLinkDown(member, reason)),
 			room.on('members', () => this.renderComposer()),
 		];
+		// Android's "Share → PeerKit": the files and text another app handed over, once the room is open.
+		if (ctx?.onShare) this.unsubscribe.push(ctx.onShare(share => this.onShared(share)));
 		this.renderComposer();
 	}
 
@@ -146,6 +148,45 @@ class TransferTool {
 	}
 
 	// --- composer ---
+
+	/** What came from the Android share sheet: text goes into the composer, files are sent after a confirmation. */
+	onShared({ text, files }) {
+		this.ctx?.activate();
+		if (text) {
+			this.textarea.value = this.textarea.value ? `${this.textarea.value}\n${text}` : text;
+			this.autosize();
+		}
+		if (files.length) this.confirmShare(files);
+	}
+
+	confirmShare(files) {
+		const total = files.reduce((sum, file) => sum + file.size, 0);
+		const note = h('p', { class: 'hint' });
+		const send = button('Send', 'send', () => {
+			dialog.close();
+			this.sendFiles(files);
+		}, 'btn primary');
+		const update = () => {
+			const others = this.room.members.length;
+			send.disabled = !others;
+			note.textContent = others
+				? `Goes to everyone in the room now (${others}).`
+				: 'Nobody else is here yet. Invite someone, then send.';
+		};
+		const dialog = openDialog(h('div', { class: 'sheet-body' },
+			h('h2', {}, files.length === 1 ? 'Send this file?' : `Send ${files.length} files?`),
+			h('ul', { class: 'share-list' }, files.map(file => h('li', {},
+				h('span', { class: 'file-name', title: file.name }, file.name),
+				h('span', { class: 'file-size' }, formatBytes(file.size))))),
+			files.length > 1 && h('p', { class: 'hint' }, `${formatBytes(total)} in all`),
+			note,
+			h('div', { class: 'actions end' },
+				button('Cancel', null, () => dialog.close(), 'btn ghost'),
+				send)));
+		const off = this.room.on('members', update);
+		dialog.addEventListener('close', off);
+		update();
+	}
 
 	onKey(e) {
 		// Enter sends on desktop; on touch keyboards Enter inserts a newline and the button sends.

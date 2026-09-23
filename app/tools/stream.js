@@ -191,7 +191,12 @@ class StreamTool {
 			room.on('link-up', member => this.onLinkUp(member)),
 			room.on('link-down', member => this.onLinkDown(member)),
 			room.on('members', () => this.render()),
-		];
+			// While the room's voice is on it owns the microphone: a camera must not send it a second time.
+			ctx?.onVoiceChange?.(() => {
+				this.applyMic();
+				this.render();
+			}),
+		].filter(Boolean);
 		this.render();
 	}
 
@@ -206,6 +211,16 @@ class StreamTool {
 
 	get connected() {
 		return this.room.members.length > 0;
+	}
+
+	/** The room's voice carries this device's microphone; a camera stream then sends video only. */
+	get voiceOn() {
+		return this.ctx?.voiceActive?.() === true;
+	}
+
+	applyMic() {
+		const on = this.prefs.mic && !this.voiceOn;
+		for (const track of this.out?.stream.getAudioTracks() ?? []) track.enabled = on;
 	}
 
 	onLinkUp(member) {
@@ -272,7 +287,7 @@ class StreamTool {
 			const stream = await getCamera(this.prefs);
 			if (!this.room.member(member.peerId)) return stopTracks(stream);
 			stream.getVideoTracks()[0].contentHint = 'motion';
-			for (const track of stream.getAudioTracks()) track.enabled = this.prefs.mic;
+			for (const track of stream.getAudioTracks()) track.enabled = this.prefs.mic && !this.voiceOn;
 			this.beginOutgoing('camera', stream, member);
 			this.countCameras();
 		} catch (err) {
@@ -395,6 +410,10 @@ class StreamTool {
 	toggleMic() {
 		const tracks = this.out?.stream.getAudioTracks() ?? [];
 		if (!tracks.length) return;
+		if (this.voiceOn) {
+			toast('Your microphone goes through the room’s voice');
+			return;
+		}
 		const on = !tracks[0].enabled;
 		for (const track of tracks) track.enabled = on;
 		this.savePrefs({ mic: on });
@@ -503,6 +522,7 @@ class StreamTool {
 
 	onCall(call, member) {
 		const meta = call.metadata ?? {};
+		if (meta.kind !== 'camera' && meta.kind !== 'screen') return; // a 'voice' call belongs to app/voice.js
 		const id = typeof meta.id === 'string' ? meta.id.slice(0, 32) : randomId(4);
 		this.expectIncoming(id, meta.kind === 'screen' ? 'screen' : 'camera', member);
 		const inc = this.in;
@@ -713,10 +733,10 @@ class StreamTool {
 		const items = [h('span', { class: 'live', 'data-paused': out.paused }, label)];
 		if (out.kind === 'camera') {
 			if (this.cameraCount > 1) items.push(iconButton('switch-camera', 'Switch camera', () => this.switchCamera()));
-			items.push(iconButton(micOn ? 'mic' : 'mic-off', !audio.length ? 'No microphone' : micOn ? 'Mute microphone' : 'Unmute microphone', () => this.toggleMic(), {
-				disabled: !audio.length,
-				pressed: audio.length ? !micOn : null,
-			}));
+			items.push(iconButton(micOn ? 'mic' : 'mic-off',
+				!audio.length ? 'No microphone' : this.voiceOn ? 'Your microphone goes through the room’s voice' : micOn ? 'Mute microphone' : 'Unmute microphone',
+				() => this.toggleMic(),
+				{ disabled: !audio.length || this.voiceOn, pressed: audio.length ? !micOn : null }));
 			items.push(h('select', { class: 'input select', 'aria-label': 'Resolution', onchange: e => this.setResolution(e.target.value) },
 				Object.keys(RESOLUTIONS).map(res => h('option', { value: res, selected: res === this.prefs.res }, res))));
 		}

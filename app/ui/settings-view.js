@@ -10,6 +10,9 @@ import {
 } from '../settings.js';
 import { MAX_NAME, device } from '../device.js';
 import { TLS_PORT, TURN_PORT, TurnError, canMint, normalizeTurn, testTurn, turnSettings } from '../turn.js';
+import { APP_VERSION } from '../version.js';
+import { install } from '../pwa.js';
+import { PROTOCOL_VERSION } from '../protocol.js';
 import { copyText, defaultDeviceName } from '../util.js';
 import { button, h, icon, openDialog, toast } from './dom.js';
 
@@ -75,6 +78,7 @@ export class SettingsView {
 		};
 		profiles.on('change', rerender);
 		turnSettings.on('change', rerender);
+		install.on(rerender); // Chrome offers the install prompt some time after the page loads
 		ice?.on('change', rerender);
 	}
 
@@ -134,7 +138,32 @@ export class SettingsView {
 					h('p', { class: 'hint' }, 'Move your servers and TURN settings to another device.'),
 					h('div', { class: 'actions start' },
 						button('Export', 'download', () => this.exportProfiles(), 'btn'),
-						button('Import', 'upload', () => this.importProfiles(), 'btn')))));
+						button('Import', 'upload', () => this.importProfiles(), 'btn'))),
+
+				h('section', { class: 'settings-section' },
+					h('h2', {}, 'Install'),
+					this.renderInstall()),
+
+				h('section', { class: 'settings-section' },
+					h('h2', {}, 'About'),
+					h('p', { class: 'version' }, `PeerKit ${APP_VERSION} · room protocol ${PROTOCOL_VERSION}`),
+					h('p', { class: 'hint' }, 'Devices in one room need the same protocol number, so reload every device after an update.'))));
+	}
+
+	/** Installing makes PeerKit open like an app, and puts it in Android's share sheet (Share → PeerKit). */
+	renderInstall() {
+		if (install.standalone) {
+			return [
+				h('p', { class: 'hint' }, 'PeerKit is installed on this device.'),
+				h('p', { class: 'hint' }, 'Share a photo or a file from another app to PeerKit and it offers to send it to the open room.'),
+			];
+		}
+		return [
+			h('p', { class: 'hint' }, 'An installed PeerKit opens from the home screen and shows up in Android’s share sheet, so a photo or a file can go straight into the room.'),
+			install.offered
+				? h('div', { class: 'actions start' }, button('Install PeerKit', 'download', () => install.run(), 'btn'))
+				: h('p', { class: 'hint' }, 'Install it from the browser menu: “Install app”, or “Add to home screen” on Android. It needs the https:// address.'),
+		];
 	}
 
 	renderProfile(p, active, inUse) {

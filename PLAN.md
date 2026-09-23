@@ -53,14 +53,15 @@ app/
   room.js               (Slice 7) members, anchor, mesh of links, join check
   device.js             device ID and name
   turn.js               TURN credentials (HMAC-SHA1), relay test, Direct/Relayed detection
+  voice.js              (Slice 8) room voice: mic capture, one call per pair, levels
   session.js            Peer lifecycle, stable id, reconnect, connections, event bus
   protocol.js           message envelope {ch, type, slot, ...} + version
   ui/                   qr, toast, sheet/dialog, status bar, styles.css
   tools/                one module per tool, same interface
-    transfer.js         text + files (Slice 8: room chat with kept files and the viewer)
+    transfer.js         text + files (Slice 9: room chat with kept files and the viewer)
     stream.js           camera / screen
     editor/             shared editor: tool UI + Yjs provider over the session
-    whiteboard/         (Slice 12) shared drawing
+    whiteboard/         (Slice 13) shared drawing
     controller.js       phone-as-gamepad + gyro
     monitor.js          host-side input visualizer
     nes/                NES tool + frame.html that hosts the emulator
@@ -68,14 +69,14 @@ app/
 vendor/peerjs.min.js    peerjs 1.5.5 UMD
 vendor/qrcode.js
 vendor/editor.js        CodeMirror 6 + Yjs bundle, built once from pinned npm versions (recipe in vendor/README.md)
-vendor/dockview/        (Slice 9) dockview-core, MIT
+vendor/dockview/        (Slice 10) dockview-core, MIT
 vendor/words.js         (Slice 7) the 2048-word list for room codes, with its licence
 vendor/fceux/           FCEUX Emscripten build (js + wasm), GPL-2.0, with a source link
 docs/turn-server.md     coturn setup guide
 demos/                  old demos, untouched, with their original peerjs/qrcode builds
 ```
 
-**Tool interface:** `{ id, title, supported(), mount(el, session, ctx) → unmount }`, where `ctx = { activate(), notify() }`. Slice 7 replaces `session` with the room (members, send to one or all), and Slice 9 lets a tool open several panels.
+**Tool interface:** `{ id, title, supported(), mount(el, session, ctx) → unmount }`, where `ctx = { activate(), notify() }`. Slice 7 replaces `session` with the room (members, send to one or all), and Slice 10 lets a tool open several panels.
 - A tool subscribes to its own channel on the session bus.
 - `supported()` hides tools the device can't run. For example, screen share is hidden on Android.
 
@@ -405,7 +406,7 @@ Each slice works end to end on an Android phone and a laptop, and leaves the app
 - Tools in this slice:
   - **Transfer**: text and files go to everyone online, with progress per member.
   - **Editor**: one provider per link, documents keyed by the room ID. Each device sends its own awareness state on every link, and cursors use the member colour.
-  - **Stream**: to one chosen member for now, until Slice 10.
+  - **Stream**: to one chosen member for now, until Slice 11.
 - Start screen: **New room**, **Join** (a code or a pasted link) and recent rooms. The room screen shows the code, QR, Copy link and Share.
 - `PROTOCOL_VERSION` → 4. Old Recent hosts, room codes and editor documents are no longer read, and a one-time notice says rooms replaced pairing.
 
@@ -458,13 +459,13 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - `PROTOCOL_VERSION` 4. One open room per device (Web Lock `peerkit:room`). Settings says a room stays on its link's server; the selected server is for new rooms and typed codes.
 - Differences from the plan:
   - The limit is 8 devices, not about 6.
-  - Transfer text and files reach only directly linked members; forwarding covers documents and cursors, and the synced chat comes in Slice 8.
+  - Transfer text and files reach only directly linked members; forwarding covers documents and cursors, and the synced chat comes in Slice 9.
   - The Direct/Relayed route per member is in the chip tooltip.
-- Checked in Node, not in a browser:
-  - A room simulation on a fake peerjs network with a virtual clock (30 checks, 20 runs in a row).
-  - The whole app in jsdom with a second, headless member (37 checks).
-  - The editor provider with 3–4 members, including forwarding (14 checks).
-  - The editor UI with two members (26 checks).
+- Checked in Node, not in a browser. Since 2026-09-23 these tests live in `test/` and run with `node test/run.mjs` (177 checks in all):
+  - `room-test.mjs`: a room simulation on a fake peerjs network with a virtual clock (30 checks, 20 runs in a row).
+  - `dom/app-test.mjs`: the whole app in jsdom with a second, headless member (40 checks in a room, 14 on the start screen).
+  - `editor-sync-test.mjs`: the editor provider with 3–4 members, including forwarding (14 checks).
+  - `dom/editor-test.mjs`: the editor UI with two members (26 checks).
 
 **Checklist**
 - [ ] The laptop creates a room; the phone joins by QR and a third device by typing the 4-word code: all three see each other in the members strip.
@@ -480,7 +481,70 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] Everything from the Slice 6 checklist, now with 3 devices where it applies.
 - [ ] Leave and forget: the room is gone from the list, and its documents are gone after a reload.
 
-### Slice 8 — Room chat, files and viewer
+### Slice 8 — Voice chat in the room
+
+**Why:** you can show a screen to the room but not talk over it. The only voice today rides along with a camera stream and reaches one person. Talking is what makes the rest worth using: writing a document together stops needing a written commentary next to it.
+
+**Decisions (interview on 2026-09-23)**
+- The controls live in the room bar, above the tools, so mute is one tap away whichever tab is open. No Voice tab.
+- An open mic with a mute button, the way a call normally works. Push-to-talk stays in the backlog.
+
+**Build**
+- **Room bar** (`app/main.js`, `app/ui/styles.css`):
+  - Not in voice: **Join voice** with the count of who is already talking.
+  - In voice: **Mute** / **Unmute**, "3 in voice", **Leave voice**, and a chevron that opens the voice sheet.
+  - The member chips carry the state: a ring in the member's colour while that member speaks, a crossed-out mic when muted, nothing when the member is not in voice.
+  - Voice sheet: volume per member (a slider and a local mute, so one loud laptop can be turned down here), and the microphone to use when the device has several.
+- **`app/voice.js`**, a room-level module mounted from `main.js` beside the tools, not a tool: it has to keep running whichever tool tab is in front.
+  - **Join** (on the tap, which is also the gesture that lets audio play): `getUserMedia({ audio: { echoCancellation, noiseSuppression, autoGainControl } })`, then `voice {on: true}` to the room and a call to every member already in voice.
+  - **One call per pair, not per direction**: the lower peer ID dials (the rule the links already use) with metadata `{kind: 'voice'}`, and the other side answers with its own microphone, so one connection carries both voices. A member who is not in voice answers with no stream and only listens.
+  - peerjs cannot renegotiate a call, so joining and leaving voice close and re-make the calls with the members it concerns. Mute does not: it is `track.enabled = false` plus `voice {muted}`, which everyone shows on the chip.
+  - Remote audio plays in one `<audio autoplay>` per member, in a container outside the tool panels so switching tabs never stops it; per-member volume is that element's `volume`. A rejected `play()` shows the same **Tap for sound** button the Stream tool uses.
+  - Speech keeps the WebRTC Opus defaults (mono, about 32 kbit/s, silence dropped) — the opposite of the `musicSdp` used for screen audio.
+  - A dropped link pauses that member's audio and calls the same device again (by device ID: its peer ID changes after a reload) when the link is back, with the Stream tool's 30 s grace.
+  - A wake lock while in voice, released on leave.
+  - **Who is speaking**: a Web Audio `AnalyserNode` per stream, local and remote, sampled about 10 times a second, with a threshold and a short hold so the ring doesn't flicker. It stays on the device; nothing about levels is sent.
+- **Protocol** (`app/protocol.js`): a new channel `voice`.
+  - `voice {on, muted}` — the sender's state, sent on every link up and whenever it changes.
+  - `PROTOCOL_VERSION` → **5**. A version-4 device answers any incoming call as a stream, so it would put a voice call on the video stage; members with different numbers already refuse to link, which is exactly what should happen here.
+- **Stream tool** (`app/tools/stream.js`): `onCall` ignores calls whose metadata kind is not `camera` or `screen` (today it answers every call). While voice is on, a camera's microphone track is muted and the bar says the voice goes through the room, so nobody is heard twice.
+
+**Tricky points**
+- **Echo**: the only cancellation is the browser's, and it cancels what the page plays through media elements — so remote audio has to go through `<audio>` elements, not the Web Audio output. Analysers tap the same stream in parallel.
+- **8 members**: 7 uplinks at about 32 kbit/s is nothing for the network, but 7 encoders and 7 decoders warm a phone up. Watch the battery with 4+ devices.
+- **Android Chrome with the screen off**: WebRTC audio keeps flowing while timers are throttled, so nothing that keeps the call alive may depend on a timer.
+- **Bluetooth headsets** appear as a new input device in the middle of a call: switching means a new `getUserMedia` and a `replaceTrack` on every call.
+- **The fake network has no media**: `test/dom/fakenet.mjs` stubs `call()` with an object that does nothing. It needs a fake MediaConnection (a call raises `call` on the target, `answer()` wires both ways) and a fake MediaStream with tracks before any of this can be checked in Node.
+
+**Tests to add**
+- `test/voice-test.mjs` on the fake network: who dials, a listener answering without a stream, join / leave / mute reaching everyone, the re-call after a link drop and after a reload, and a stream call and a voice call not being taken for each other.
+- The jsdom app test: Join voice shows the mute button and marks the chips, Leave voice closes the calls.
+
+**As built** (2026-09-23, app 0.8.0, `PROTOCOL_VERSION` 5)
+- `app/voice.js` is mounted from `main.js` beside the tools, and its `<audio>` elements live in a container on `body`, so nothing stops when the tab changes. The controls are a row in the room bar: **Join voice**, then **Mute** / **Unmute**, the count, **Leave voice** and a chevron for the sheet (volume per member, a local mute, and the microphone when the device has several).
+- One call per pair, with metadata `{kind: 'voice'}`: the member with a microphone dials, the lower peer ID when both have one, and the other answers with its own microphone.
+- **Not in the plan: a listener.** A device with no microphone, or one where the prompt was refused, still joins — it hears the room, shows as muted to everyone, never dials, and gets a **Use microphone** button to take part after all. So the state message is `{on, muted, mic}`, and the room works on `http://<lan-ip>`, where there is no microphone at all.
+- Mute is `track.enabled = false` plus a message; joining and leaving re-make the calls, because peerjs cannot renegotiate.
+- Who is speaking comes from a Web Audio `AnalyserNode` per stream and stays on the device. Without Web Audio everything works except the marks. The chips show a ring while someone speaks and a crossed-out microphone when they are muted.
+- A link that drops closes that call and forgets the member; when the link is back (a reload brings a new peer ID) the calls are made again by themselves. A call that falls over on its own is retried up to 5 times, a second apart.
+- The Stream tool now ignores media calls whose kind is not `camera` or `screen`, and mutes a camera's own microphone while voice is on, so nobody is heard twice.
+- Tests: `test/voice-test.mjs` (27 checks) on a faked room with the media connections from `dom/fakenet.mjs`, which gained a real `call()`, `FakeMediaConnection` and `FakeMediaStream`; the jsdom app test gained 11 checks for the bar, the chips and the call to a member in voice.
+- Checked in Node, not in a browser: the checklist below is still to do.
+
+**Checklist**
+- [ ] Three devices join voice: everyone hears everyone, and the chips show who is speaking.
+- [ ] Mute on the phone: the others see the mark and hear nothing; unmute needs no new permission prompt.
+- [ ] A fourth device joins the room while the others talk, taps Join voice and is in the conversation within a couple of seconds.
+- [ ] One device leaves voice but stays in the room: the others keep talking, and it still uses the chat and the editor.
+- [ ] A laptop on its speakers, without headphones: nobody hears an echo of themselves.
+- [ ] The phone shares its camera while in voice: its voice is heard once, not twice.
+- [ ] The phone's screen goes off for a minute during a call: the conversation continues.
+- [ ] Wi-Fi drops on one device for 10 s: its audio comes back by itself, without a tap.
+- [ ] A member behind TURN (relayed) is in voice: audio works both ways.
+- [ ] Voice while someone shares a 1080p screen: the voice stays intelligible.
+- [ ] Leave the room during a call: the browser's microphone indicator goes out.
+
+### Slice 9 — Room chat, files and viewer
 
 **Why:** the room keeps a shared history. People who join later see what was said and can get what was kept, and files open right in the browser.
 
@@ -514,7 +578,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] Remove a kept file: it disappears on all devices, and storage use goes down.
 - [ ] Reach the storage limit: the oldest kept file is dropped, and the timeline says so.
 
-### Slice 9 — Desktop layout
+### Slice 10 — Desktop layout
 
 **Why:** a laptop screen fits several tools at once: watch a stream while chatting, or edit next to the chat.
 
@@ -538,7 +602,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] Narrow the window: tabs come back, the stream keeps playing and the editor keeps its cursor.
 - [ ] The phone looks and works as before.
 
-### Slice 10 — Streams to the room
+### Slice 11 — Streams to the room
 
 **Why:** anyone can show their camera or screen to the whole room, and several people can share at once.
 
@@ -548,7 +612,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
   - The sender makes one media call per viewer. Camera switch, mic and resolution apply to all of them (`replaceTrack`, `applyConstraints`).
   - A member who joins later gets the streams already running.
   - The sender sees the number of viewers and the upload rate (from `getStats()`), with a warning when the upload can't keep up. Each viewer's `maxBitrate` is lowered before the picture breaks up.
-- Viewing: each stream is its own panel on desktop (Slice 9); on phones the Stream tab shows a grid with tap to focus.
+- Viewing: each stream is its own panel on desktop (Slice 10); on phones the Stream tab shows a grid with tap to focus.
 - The 30 s pause and re-call after a dropped link works per viewer. The screen-audio music settings apply to every call, as today.
 
 **Tricky points**
@@ -563,7 +627,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] The sender switches camera: all viewers see the new camera without a restart.
 - [ ] The sender's upload is limited (e.g. a phone hotspot): the warning shows, and the picture gets softer instead of freezing.
 
-### Slice 11 — Pointer and drawing on streams
+### Slice 12 — Pointer and drawing on streams
 
 **Why:** viewers can show exactly what they mean on a shared screen: "click here", "this line".
 
@@ -581,7 +645,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] A portrait phone viewing a landscape screen: the pointer still lands in the right place.
 - [ ] Strokes fade by themselves, and Clear removes them for everyone.
 
-### Slice 12 — Shared whiteboard
+### Slice 13 — Shared whiteboard
 
 **Why:** sketching together, which text and streams can't do.
 
@@ -598,7 +662,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] Pinch zoom on the phone doesn't draw.
 - [ ] The exported PNG matches the board.
 
-### Slice 13 — Phone as controller
+### Slice 14 — Phone as controller
 
 **Why:** gyro and gamepad become a reusable input layer, the foundation for the party games.
 
@@ -628,7 +692,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] A USB/Bluetooth gamepad connected to the phone shows on the laptop monitor.
 - [ ] Rapid tap of a button is never missed, even under packet loss.
 
-### Slice 14 — NES (two players)
+### Slice 15 — NES (two players)
 
 **Why:** the first real game on the input layer. A laptop or TV runs the emulator; a phone is the second pad, either on the couch or remotely with the picture streamed to it.
 
@@ -648,9 +712,9 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
   - Pads: keyboard (remappable, remembered) and the Gamepad API. Player 1 is the host by default; players can be swapped.
   - Save state / Load state in slots per ROM (IndexedDB), plus export/import as a file.
 - Guest (NES tab), two modes:
-  - **Controller only**: the Slice 13 NES layout, for playing in front of the host's screen.
+  - **Controller only**: the Slice 14 NES layout, for playing in front of the host's screen.
   - **Remote play**: the host streams the canvas and sound (media call kind `nes`, music audio from Slice 4) with the touch pad over it.
-- Input: the Slice 13 input channel; the host maps each slot to a pad and calls `_setGamePadValue`.
+- Input: the Slice 14 input channel; the host maps each slot to a pad and calls `_setGamePadValue`.
 - When the guest drops, the game pauses; it continues on reconnect.
 
 **Checklist**
@@ -661,7 +725,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] Stop the game or leave the tab: the emulator unloads (no sound, CPU drops).
 - [ ] A USB/Bluetooth gamepad on the laptop plays player 1.
 
-### Slice 15 — Party games in a room
+### Slice 16 — Party games in a room
 
 **Why:** several phones in one room play on one screen, which is the prerequisite for multiplayer games.
 
@@ -669,7 +733,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - The member that runs a game (the NES, later a game module) shows a lobby: player slots with each member's colour and name. Members pick a free slot on their phone; the game screen can swap slots.
 - Reconnecting keeps a player's slot, by device ID.
 - The Monitor tool shows every slot at once.
-- NES: Four Score on; slots 1–4 map to pads 1–4. Remote players watch the game as a room stream (Slice 10) with the touch pad over it.
+- NES: Four Score on; slots 1–4 map to pads 1–4. Remote players watch the game as a room stream (Slice 11) with the touch pad over it.
 - Kicking players and locking the room are gone from this slice: rooms have no removal. Starting a game in a new room is the way to play with a different group.
 
 **Checklist**
@@ -679,13 +743,13 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] Four devices play a 4-player NES game (Four Score), each with its own pad.
 - [ ] A member far away plays from the stream with the touch pad over it.
 
-### Slice 16 — Game module API and more games
+### Slice 17 — Game module API and more games
 
 **Why:** gives new games a template, and proves the input layer is good enough for motion games too.
 
 **Build**
 - `games/<id>/game.js` interface: `{ id, title, players:{min,max}, controllerLayout, mount(el, input), unmount() }`. The host lists games in a Games tab, and the phones switch to the declared layout automatically.
-- The NES tool from Slice 14 moves behind this interface.
+- The NES tool from Slice 15 moves behind this interface.
 - **Swing test** (Wii-tennis-like): swing speed and direction from the quaternion's angular velocity, shown as a meter per player. This is used to tune the gyro pipeline.
 
 **Checklist**
@@ -738,12 +802,61 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 
 ---
 
+## Done outside the slices
+
+### Installable app and Android share target (2026-09-23, 0.7.1)
+
+**Why:** an installed PeerKit opens from the home screen without the browser chrome, and — the real point — Android only offers an app in its share sheet once it is installed. "Share → PeerKit" from the gallery or a file manager now puts a photo or a file straight into the open room.
+
+**As built**
+- `manifest.webmanifest`: relative `start_url` and `scope` (so a subdirectory deploy works), standalone, 192/512 icons and a maskable one rendered from `icon.svg`, and the `share_target`.
+- `sw.js`, a classic service worker (Firefox has no module workers):
+  - **Install:** it is what makes the browser offer "Install app" at all. `SHELL` lists the app's files; `vendor/editor.js` (0.7 MB) is left out and cached when the Editor tab is first opened.
+  - **Offline:** network first, cache as fallback, so an update is never held back by the cache; a navigation with no network falls back to the cached start page. The cache is named after `APP_VERSION`, and older ones are deleted on activation.
+  - **Share:** the share target is a POST, which a static host cannot answer. The worker takes it, puts the files and the text in the `peerkit-share` cache and redirects to `./?share=1`.
+- `app/share.js` reads that cache once, `app/pwa.js` registers the worker and keeps Chrome's install prompt for the **Install** section in Settings.
+- The share is taken out of the cache only when a room is open, so it survives the reload that opening a room does. With no room the start screen says what is waiting, with **Discard**; in a room the Transfer tool asks "Send this file?" and sends it to everyone once someone else is there.
+- Tests: `node test/run.mjs pwa` (26 checks) runs the real worker over a fake Cache Storage and then reads it back with `app/share.js`, so both sides are checked against each other; it also fails when a new app file is missing from `SHELL`. The jsdom tests cover the banner on the start screen and a shared file reaching a member.
+
+**Checklist**
+- [ ] Android Chrome on the GitHub Pages address: Settings → Install (or the browser menu) installs PeerKit, and it opens from the home screen with no address bar.
+- [ ] Share a photo from the gallery to PeerKit with a room open: the sheet lists it, **Send** delivers it to the other device.
+- [ ] Share a link from Chrome to PeerKit: the text lands in the composer.
+- [ ] Share a photo with no room open: the start screen says it is waiting, and it is still sent after creating a room.
+- [ ] Turn off Wi-Fi and mobile data and open the installed app: the start screen loads (it can't reach the signaling server, which is expected).
+- [ ] After a deploy, reloading twice picks up the new version (the version in Settings → About changes).
+
+## Backlog (to triage)
+
+Ideas raised on 2026-09-23 and not yet scheduled into a slice. Size is a rough guess: **S** about half a day, **M** a day or two, **L** a slice of its own.
+
+### Tools people would use
+- **Push to talk** (S) — hold a button (or Space on a laptop) to unmute, for a noisy room or a phone in a café. Slice 8 ships the open mic with mute.
+- **Clipboard sync** (S) — copy on the laptop, paste on the phone. A tiny tool over ctl, or part of Chat.
+- **Phone as a webcam or document scanner** (M) — the phone's camera as a panel on the laptop, with a "take a photo into the room" button.
+- **Watch together** (M) — shared play, pause and seek for a file kept in the room (needs Slice 9's kept files).
+- **Small room tools** (S each) — a poll, a shared timer, dice. Good practice for the tool API before the game slices.
+
+### Robustness of the room
+- **Fallback anchor IDs** (M) — derive `anchor2` and `anchor3` from the code. Today a crashed anchor holds the room's address for about 100 s and newcomers wait; with fallbacks they get in at once.
+- **Self-hosted signaling** (S) — a `peerjs-server` guide beside `docs/turn-server.md`, on the VPS that already runs coturn. Removes the "public 0.peerjs.com is unreliable" risk.
+- **Offline, the rest of it** (S) — the service worker of 2026-09-23 already opens the app with no internet, but `vendor/editor.js` is cached only after the Editor tab has been opened once, and a device with no network has no signaling server to talk to. Pairs with a signaling server on the same LAN.
+- **Update notice** (S) — the app checks its deployed version and offers "PeerKit was updated — reload", so a protocol mismatch explains itself instead of a bare "version" rejection. The service worker knows when a new version has been fetched, so it can say so.
+- **Room export and import** (M) — save a room's documents and chat to a file and read it back; plus what each room uses on this device, in Settings.
+
+### Project health
+- **Browser test harness** (M) — `test/room.html` opens several iframes of the app, drives them through a scripted room (join, send a file, type, kill the anchor) and shows pass/fail. Runs on the phone too, so the Android items on the checklists stop being hand work.
+- **CI** (S) — GitHub Actions running `node test/run.mjs` and the syntax check on every push.
+- **In-app log panel** (M) — errors and the last protocol messages, copyable. On a phone there is no console, so today a failure during testing leaves nothing to look at. Would also cover the "connection diagnostics" idea: ICE candidate types and a bitrate graph beyond the Direct/Relayed label.
+- **Security review pass** (M) — the handshake and everything read from links, storage and members, written down as a short threat model.
+- **Accessibility and keyboard pass** (M) — focus order and traps in the dialogs, labels, visible focus, reduced motion.
+
+### Reach
+- **Russian UI** (M) — needs a string table first; the strings are spread through the views today.
+
 ## Later ideas (not scheduled)
 - Video forwarding by viewers: a viewer re-sends a stream it receives when the sender's upload isn't enough. It re-encodes, which adds delay and loses some quality, and a leaving viewer cuts off everyone after it.
 - Several open rooms per device, and moving a room to another signaling server.
-- Connection diagnostics tool beyond the Direct/Relayed label: ICE candidate types, bitrate graph.
-- PWA manifest and share target, so "Share → PeerKit" from the Android gallery sends a file directly.
-- Clipboard sync (desktop paste goes straight to the phone).
 - iOS Safari: DeviceOrientation permission prompt, autoplay rules, download quirks.
 
 ## Risks to keep in mind
