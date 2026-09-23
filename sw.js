@@ -6,7 +6,7 @@
  * It is a classic worker, not a module, because Firefox still has no module workers.
  * VERSION must match APP_VERSION in app/version.js and SHELL must list the app's files; test/pwa-test.mjs checks both.
  */
-const VERSION = '0.8.2';
+const VERSION = '0.10.0';
 const CACHE = `peerkit-${VERSION}`;
 const SHARE_CACHE = 'peerkit-share'; // read and emptied by app/share.js; the names below are shared with it
 const SHARE_INDEX = 'share-index';
@@ -15,6 +15,7 @@ const MAX_SHARE_BYTES = 2 * 1024 * 1024 * 1024; // one share; bigger than this i
 
 // Everything the app needs to start. vendor/editor.js (0.7 MB) is left out: it is loaded when the Editor tab
 // is first opened and cached then, so an offline device that never opened the editor doesn't pay for it.
+// vendor/dockview.js and .css (0.5 MB) likewise: only a wide screen with a mouse loads them, never a phone.
 const SHELL = [
 	'./',
 	'manifest.webmanifest',
@@ -43,6 +44,7 @@ const SHELL = [
 	'app/tools/editor/editor.js',
 	'app/tools/editor/provider.js',
 	'app/ui/dom.js',
+	'app/ui/layout.js',
 	'app/ui/qr.js',
 	'app/ui/settings-view.js',
 	'app/ui/start-view.js',

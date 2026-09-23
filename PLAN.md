@@ -69,7 +69,7 @@ app/
 vendor/peerjs.min.js    peerjs 1.5.5 UMD
 vendor/qrcode.js
 vendor/editor.js        CodeMirror 6 + Yjs bundle, built once from pinned npm versions (recipe in vendor/README.md)
-vendor/dockview/        (Slice 10) dockview-core, MIT
+vendor/dockview.js, .css (Slice 10) dockview-core, MIT
 vendor/words.js         (Slice 7) the 2048-word list for room codes, with its licence
 vendor/fceux/           FCEUX Emscripten build (js + wasm), GPL-2.0, with a source link
 docs/turn-server.md     coturn setup guide
@@ -454,16 +454,16 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - **TURN**: any member with a secret sends 7-day credentials in `welcome` and on every link up. Others take credentials only if they expire later and pass them on; the room entry stores the newest.
 - **Tools**:
   - **Transfer**: text goes to everyone and shows the sender's name. A file goes to each member over its own link, with one card and a line per member. Join and leave show in the feed.
-  - **Stream**: goes to one member, picked from a list when there are several. It pauses and resumes with that device, also after it reloads. Since 2026-09-23 it can also start in an empty room and waits there for the first arrival.
+  - **Stream**: goes to one member, picked from a list when there are several. It pauses and resumes with that device, also after it reloads. Since 2026-09-23 it can also start in an empty room and waits there for the first arrival, and a viewer who is gone for more than 30 s no longer stops it: it waits for the next arrival (0.8.3).
   - **Editor**: one provider for all links. Updates and cursors from a member are forwarded to members not linked to it, going by the `links` each member announces. A link going down resyncs with the others.
 - `PROTOCOL_VERSION` 4. One open room per device (Web Lock `peerkit:room`). Settings says a room stays on its link's server; the selected server is for new rooms and typed codes.
 - Differences from the plan:
   - The limit is 8 devices, not about 6.
   - Transfer text and files reach only directly linked members; forwarding covers documents and cursors, and the synced chat comes in Slice 9.
   - The Direct/Relayed route per member is in the chip tooltip.
-- Checked in Node, not in a browser. Since 2026-09-23 these tests live in `test/` and run with `node test/run.mjs` (199 checks in all):
+- Checked in Node, not in a browser. Since 2026-09-23 these tests live in `test/` and run with `node test/run.mjs` (229 checks in all):
   - `room-test.mjs`: a room simulation on a fake peerjs network with a virtual clock (30 checks, 20 runs in a row).
-  - `dom/app-test.mjs`: the whole app in jsdom with a second, headless member (46 checks in a room, 14 on the start screen).
+  - `dom/app-test.mjs`: the whole app in jsdom with a second, headless member (52 checks in a room, 14 on the start screen, 24 in the desktop layout).
   - `editor-sync-test.mjs`: the editor provider with 3–4 members, including forwarding (14 checks).
   - `dom/editor-test.mjs`: the editor UI with two members (26 checks).
 
@@ -594,6 +594,23 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 **Tricky points**
 - Moving an element in the DOM reloads an iframe and pauses a video. Use dockview's always-rendered panels for iframes (the NES later), and call `play()` on videos after a move.
 - CodeMirror needs `requestMeasure()` after its panel resizes or becomes visible.
+
+**As built** (2026-09-23, app 0.10.0, `PROTOCOL_VERSION` 5 — built before Slice 9, on request)
+- `vendor/dockview.js` is dockview-core **8.2.0** (the newest at least 21 days old; 8.3.x was too new), its ES module build as is. The npm package ships its stylesheet only inside the UMD build, which injects it on load, so `vendor/dockview.css` is that stylesheet taken out as is (recipe in `vendor/README.md`). Both load with `import()` / a `<link>` only when the window is wide, and start loading while the room is being found, so a phone never downloads them. Like `vendor/editor.js`, they stay out of the service worker's install list and are cached on first use.
+- `app/ui/layout.js` (`ToolLayout`) owns where the tools are shown. Each tool gets one element for its whole life. `(min-width: 900px) and (pointer: fine)` puts those elements into dockview panels; a narrower window, or a phone, puts them back under the bottom tabs. Switching (resizing the window) moves the elements and never mounts a tool again. Videos that were playing are started again after a move, because moving a media element pauses it.
+- Panels use dockview's `always` renderer: a tool in a tab that isn't in front stays in the page (hidden, not removed), as with the bottom tabs, so a stream keeps its sound and the chat keeps its scroll position.
+- The default layout: **Stream** and **Editor** as tabs in the main area with the Editor in front, and **Transfer** — the chat until Slice 9 — in a 360 px column on the right.
+- Each group has two buttons at the right of its tabs: **Float** / **Put back into the layout** (dragging a tab with Shift held floats it too) and **Maximize** / **Restore**. Tabs have no close button: a tool can't be closed, only moved.
+- The layout is saved per device (`peerkit.layout`, version 1) 300 ms after each change and when the page closes. A saved layout that holds other tools than the ones this version has (or doesn't load) is ignored, and the default is used. **Reset layout** is an icon in the top bar, shown only while panels are in use.
+- `ctx` for tools is unchanged. `activate()` brings the panel to the front of its group (and ends a maximize that hides it); `notify()` puts a dot on the panel's tab; `visible()` and `onShow()` follow what can really be seen — dockview reports the panels of a group hidden by a maximize as visible, so the group is asked too.
+- The panels take their colours from the app's own variables (`.dockview-theme-peerkit` in `styles.css`), so light and dark follow the system. Toasts sit above floating panels.
+- Differences from the plan:
+  - **`ctx.openPanel()` is not built.** Nothing opens a second panel yet; it comes with its first user, Slice 11's one panel per stream.
+  - The members stay in the room bar above the panels, with the voice row, instead of a people panel in the side column: one place for them in both layouts.
+  - "Reset layout in the menu": there is no menu, so it is a top-bar icon.
+  - The side column holds Transfer until Slice 9 turns it into the chat.
+- Tests: a third mode of the jsdom app test, `node test/run.mjs desktop` (24 checks): the default layout, the editor loading because it can be seen, maximize hiding the chat so a message marks its tab, a stream bringing its panel to the front, float, the layout saved, narrowing to tabs with the same elements (not remounted), widening back to the saved layout, Reset layout, and a saved layout for other tools falling back to the default. The pwa test allows `vendor/dockview.js` outside the install list.
+- Checked in Node, not in a browser: dragging, sizes and how it looks are for the checklist below.
 
 **Checklist**
 - [ ] On the laptop: a stream in the main area and the chat at the side, both live.
@@ -847,6 +864,17 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 - **A silence that was in the code**: `analyse()` handed the `<audio>` element's own stream to an `AnalyserNode`. Chrome gives a remote stream to a media element **or** to Web Audio, not both, so the sound went into the Web Audio graph, which connects to nothing. The levels now read a clone of the remote track (`tap()`), the clone is stopped with the call, and this device's own microphone is still read straight, because nothing is playing it. That one makes a member silent *while* the speaking mark works, which is not what was reported, so it was not the whole story — but it would have been the next bug.
 - `test/voice-test.mjs` grew from 27 to 43 checks: a fake Web Audio that reads a level, the copy the analyser gets against the stream the element plays, the copy stopped with the call, `waiting` / `statusOf` before and after a call comes up, a call that stops carrying media and comes back without being remade, the redial after a call with no audio, and the pair that calls by itself when signaling returns.
 - Still to find out on real devices: where the voice sheet says it stops — "No call yet", "Connecting…" or "No sound coming through" — and what ICE state the console prints when a call is given up on.
+
+### A share that outlives its viewer (2026-09-23, 0.8.3)
+
+**Why:** a screen share started in an empty room went to the first arrival, but when that viewer left it said "Paused until *name* is back…" for 30 s and then stopped the capture, with "Your screen sharing stopped when the page reloaded or the connection dropped". To show the screen to them again you had to pick the window again — the very setup 0.8.1 was meant to spare.
+
+**As built**
+- The 30 s grace still belongs to the device that dropped: if it comes back in time (after a reload too), it gets the stream at once and nobody else can take it.
+- After the grace the capture keeps running instead of stopping: the bar says "*name* left — waiting for someone to join", and the next member to arrive gets the same stream, that device included, as in 0.8.1. Only Stop, the browser's own "Stop sharing" and the viewer's ✕ end it.
+- The "stopped" offer with **Resume** now appears only after this page reloads (the capture dies with the page), and says so.
+- Not changed: with others still in the room, a waiting stream goes only to a newcomer. Handing it to someone already there is Slice 11's "every member receives it".
+- Covered in the jsdom app test, where the Stream tool's own timers run 100× faster: the viewer leaves, the bar pauses for it, then waits for anyone with the capture still on; the same device coming back gets the same stream id.
 
 ## Backlog (to triage)
 

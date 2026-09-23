@@ -51,8 +51,10 @@ check('sw.js caches under the app version, so an update starts a new cache',
 const walk = dir => readdirSync(`${ROOT}/${dir}`, { withFileTypes: true }).flatMap(entry =>
 	entry.isDirectory() ? walk(`${dir}/${entry.name}`) : entry.name.endsWith('.js') ? [`${dir}/${entry.name}`] : []);
 const shell = sw.match(/const SHELL = \[([\s\S]*?)\];/)[1].match(/'([^']+)'/g).map(s => s.slice(1, -1));
-// vendor/editor.js is the exception: 0.7 MB loaded only when the Editor tab is first opened.
-const vendor = readdirSync(`${ROOT}/vendor`).filter(name => name.endsWith('.js') && name !== 'editor.js').map(name => `vendor/${name}`);
+// The exceptions are cached on first use: vendor/editor.js (0.7 MB) when the Editor tab is first opened, and
+// vendor/dockview.js (0.4 MB) only on a wide screen with a mouse, which a phone never has.
+const LAZY = ['editor.js', 'dockview.js'];
+const vendor = readdirSync(`${ROOT}/vendor`).filter(name => name.endsWith('.js') && !LAZY.includes(name)).map(name => `vendor/${name}`);
 const wanted = [...walk('app'), ...vendor, 'app/ui/styles.css', './'];
 const missing = wanted.filter(file => !shell.includes(file));
 check('the shell lists every app file, so a new one is not forgotten', missing.length === 0, missing.join(', '));

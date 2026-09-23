@@ -4,7 +4,7 @@ import { randomId, readJSON, wakeLock, writeJSON } from '../util.js';
 
 const PREFS_KEY = 'peerkit.stream';
 const RESUME_KEY = 'peerkit.stream.resume'; // sessionStorage: what this tab shared before a reload or a long drop
-const GRACE = 30000; // a stream survives a dropped link this long, so it can continue without a new tap
+const GRACE = 30000; // how long a stream is kept for the viewer whose link dropped, before anyone who arrives gets it
 const RESOLUTIONS = { '480p': [854, 480], '720p': [1280, 720], '1080p': [1920, 1080] };
 const AUDIO = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 // System audio is music and video sound, not a voice: no processing. restrictOwnAudio (where supported)
@@ -24,7 +24,8 @@ const KIND_NOUN = { camera: 'camera', screen: 'shared screen' };
  *   stop  {id}         sender → receiver
  *   close {id}         receiver → sender: the viewer closed it, stop sending
  * After a dropped link the sender calls the same device again (its peer ID may be new after a reload)
- * with the same id; the receiver treats it as a resume.
+ * with the same id; the receiver treats it as a resume. After GRACE the capture keeps running and goes
+ * to whoever arrives first, as a stream started in an empty room does.
  */
 
 export default {
@@ -391,9 +392,12 @@ class StreamTool {
 		out.paused = true;
 		closeCall(out);
 		out.timer = setTimeout(() => {
-			if (this.out !== out) return;
-			this.stopOutgoing({ notify: false, keepResume: true });
-			this.resume = out.kind;
+			if (this.out !== out || !out.paused) return;
+			// The viewer is not back: keep the capture and give it to whoever arrives next, that device included.
+			// toName stays, so the bar can say who left.
+			out.timer = null;
+			out.paused = false;
+			out.to = null;
 			this.render();
 		}, GRACE);
 	}
@@ -716,7 +720,7 @@ class StreamTool {
 		this.resumeBar.hidden = !show;
 		if (!show) return;
 		this.resumeBar.replaceChildren(
-			h('span', {}, `Your ${kind === 'screen' ? 'screen sharing' : 'camera'} stopped when the page reloaded or the connection dropped.`),
+			h('span', {}, `Your ${kind === 'screen' ? 'screen sharing' : 'camera'} stopped when the page reloaded.`),
 			button('Resume', null, () => this.chooseMember(kind, member => (kind === 'screen' ? this.startScreen(member) : this.startCamera(member))), 'btn small primary'),
 			iconButton('close', 'Dismiss', () => {
 				this.resume = null;
@@ -742,7 +746,7 @@ class StreamTool {
 		const micOn = Boolean(audio[0]?.enabled);
 		const what = out.kind === 'screen' ? 'your screen' : 'your camera';
 		const label = !out.to
-			? `Ready to share ${what} — waiting for someone to join`
+			? `${out.toName ? `${out.toName} left` : `Ready to share ${what}`} — waiting for someone to join`
 			: out.paused
 				? `Paused until ${out.toName} is back…`
 				: out.kind === 'screen' ? `Sharing your screen with ${out.toName}` : `Sharing camera with ${out.toName}`;

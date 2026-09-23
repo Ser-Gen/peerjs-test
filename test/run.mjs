@@ -1,6 +1,6 @@
 // Runs the Node tests. Usage:
 //   node test/run.mjs                 every test once
-//   node test/run.mjs room            one test by name (room | editor-sync | voice | pwa | app | start | editor)
+//   node test/run.mjs room            one test by name (room | editor-sync | voice | pwa | app | start | desktop | editor)
 //   node test/run.mjs room --times 20 repeat it, which is how the random anchor handover is checked
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -16,6 +16,7 @@ const TESTS = [
 	{ name: 'pwa', file: 'pwa-test.mjs', args: [], about: 'the manifest, the service worker and the Android share' },
 	{ name: 'app', file: 'dom/app-test.mjs', args: ['room'], jsdom: true, about: 'the whole app in a room, in jsdom' },
 	{ name: 'start', file: 'dom/app-test.mjs', args: ['start'], jsdom: true, about: 'the start screen: codes, links, recent rooms' },
+	{ name: 'desktop', file: 'dom/app-test.mjs', args: ['desktop'], jsdom: true, about: 'the desktop layout: panels, float, maximize, back to tabs' },
 	{ name: 'editor', file: 'dom/editor-test.mjs', args: [], jsdom: true, about: 'the Editor tool with two members, in jsdom' },
 ];
 

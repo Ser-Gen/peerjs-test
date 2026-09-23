@@ -6,6 +6,7 @@ import { dropShare, peekShare, takeShare } from './share.js';
 import { registerServiceWorker } from './pwa.js';
 import { Voice } from './voice.js';
 import { button, h, icon, openDialog, toast } from './ui/dom.js';
+import { ToolLayout, WIDE, loadDock } from './ui/layout.js';
 import { renderQR } from './ui/qr.js';
 import { SettingsView } from './ui/settings-view.js';
 import { StartView } from './ui/start-view.js';
@@ -30,6 +31,7 @@ const els = {
 	rtt: $('rtt'),
 	route: $('route'),
 	openSettings: $('open-settings'),
+	resetLayout: $('reset-layout'),
 	leave: $('leave'),
 	banner: $('banner'),
 	bannerText: $('banner-text'),
@@ -79,8 +81,7 @@ const room = entry
 const voice = room ? new Voice(room) : null;
 
 let everOpen = false;
-let toolsMounted = false;
-let tabsReady = false;
+let layout = null; // where the tools are shown: bottom tabs or desktop panels (app/ui/layout.js)
 let settingsOpen = false;
 let noticeDismissed = false;
 let claim = 0;
@@ -114,6 +115,8 @@ if (room) {
 	ice.on('change', () => room.shareTurn()); // renewed credentials
 	voice.on('change', renderRoomBar);
 	window.peerkit = room; // handy for debugging from the console
+	// Fetch the desktop layout while the room is found, so the panels are ready when it opens.
+	if (matchMedia(WIDE).matches) loadDock().catch(() => {});
 }
 profiles.on('change', renderNotice);
 registerServiceWorker();
@@ -146,6 +149,8 @@ window.addEventListener('popstate', () => setSettingsOpen(history.state?.peerkit
 
 els.openSettings.append(icon('settings'));
 els.openSettings.addEventListener('click', () => (settingsOpen ? closeSettings() : openSettings()));
+els.resetLayout.append(icon('layout'));
+els.resetLayout.addEventListener('click', () => layout?.reset());
 els.leave.addEventListener('click', showLeave);
 els.noticeDismiss.append(icon('close'));
 els.noticeDismiss.addEventListener('click', () => {
@@ -233,7 +238,8 @@ function render() {
 	els.message.hidden = view !== 'message';
 	els.session.hidden = view !== 'session';
 	els.settings.hidden = view !== 'settings';
-	els.tabs.hidden = !tabsReady || view !== 'session';
+	els.tabs.hidden = !layout?.tabbed || view !== 'session';
+	els.resetLayout.hidden = !layout?.docked || view !== 'session';
 	renderStatus();
 	renderRoomBar();
 	renderBanner(banner);
@@ -650,41 +656,28 @@ function setSettingsOpen(open) {
 // --- tools ---
 
 function mountTools() {
-	if (toolsMounted) return;
-	toolsMounted = true;
+	if (layout) return;
 	takeShare().then(share => {
 		sharePending = share;
 		offerShare();
 	});
-	const panels = TOOLS.map(tool => h('section', { class: 'tool', 'data-tool': tool.id }));
-	const tabs = TOOLS.map((tool, i) => h('button', { type: 'button', onclick: () => select(i) }, tool.title));
-	const showListeners = TOOLS.map(() => new Set());
-	const select = index => {
-		panels.forEach((panel, i) => {
-			const hidden = i !== index;
-			if (panel.hidden === hidden) return;
-			panel.hidden = hidden;
-			if (!hidden) showListeners[i].forEach(fn => fn());
-		});
-		tabs.forEach((tab, i) => tab.setAttribute('aria-current', String(i === index)));
-		tabs[index].classList.remove('notify');
-	};
-	els.toolHost.append(...panels);
-	if (TOOLS.length > 1) {
-		els.tabs.replaceChildren(...tabs);
-		tabsReady = true;
-	}
-	select(0);
-	TOOLS.forEach((tool, i) => tool.mount(panels[i], room, {
+	layout = new ToolLayout({
+		host: els.toolHost,
+		tabs: els.tabs,
+		tools: TOOLS,
+		// On a wide screen the chat stays at the side, next to whatever is open in the main area.
+		side: ['transfer'],
+		front: 'editor',
+		onChange: render,
+	});
+	for (const tool of TOOLS) tool.mount(layout.element(tool.id), room, {
 		// Tools that keep data per room (the editor's documents) key it by the room ID, the same on every device.
 		room: roomIds(code).id,
 		/** Bring this tool to the front, e.g. when someone starts a stream. */
-		activate: () => select(i),
+		activate: () => layout.activate(tool.id),
 		/** Mark the tab when something arrived while another tool is shown. */
-		notify: () => {
-			if (panels[i].hidden) tabs[i].classList.add('notify');
-		},
-		visible: () => !panels[i].hidden,
+		notify: () => layout.notify(tool.id),
+		visible: () => layout.visible(tool.id),
 		/** The room's voice: a tool that carries audio of its own mutes it while this is on. */
 		voiceActive: () => voice.active,
 		onVoiceChange: fn => voice.on('change', fn),
@@ -694,10 +687,7 @@ function mountTools() {
 			offerShare();
 			return () => shareListeners.delete(fn);
 		},
-		/** Called each time the tool's tab is opened; returns an unsubscribe function. */
-		onShow: fn => {
-			showListeners[i].add(fn);
-			return () => showListeners[i].delete(fn);
-		},
-	}));
+		/** Called each time the tool comes into view (its tab or panel); returns an unsubscribe function. */
+		onShow: fn => layout.onShow(tool.id, fn),
+	});
 }

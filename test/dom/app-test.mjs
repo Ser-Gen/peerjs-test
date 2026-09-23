@@ -1,5 +1,5 @@
 // The whole app (index.html + app/main.js) in jsdom on a fake peerjs network, with a headless second member.
-// Usage: node app-test.mjs room | start
+// Usage: node app-test.mjs room | start | desktop
 const ROOT = new URL('../../', import.meta.url).pathname.replace(/\/$/, ''); // the repo root
 const MODE = process.argv[2] ?? 'room';
 const fs = await import('node:fs');
@@ -42,7 +42,20 @@ const expose = ['window', 'Window', 'document', 'navigator', 'localStorage', 'se
 	'MutationObserver', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'Range', 'Selection',
 	'Event', 'CustomEvent', 'KeyboardEvent', 'MouseEvent', 'InputEvent', 'FocusEvent', 'CompositionEvent', 'DOMParser', 'File', 'Blob'];
 for (const key of expose) Object.defineProperty(globalThis, key, { value: key === 'window' ? window : window[key], configurable: true, writable: true });
-window.matchMedia = globalThis.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+// The desktop layout follows one media query; the test widens and narrows the window through it.
+const wide = { matches: MODE === 'desktop', listeners: new Set() };
+window.matchMedia = globalThis.matchMedia = query => (query.includes('min-width: 900px')
+	? { get matches() { return wide.matches; }, addEventListener: (type, fn) => wide.listeners.add(fn), removeEventListener: (type, fn) => wide.listeners.delete(fn) }
+	: { matches: false, addEventListener() {}, removeEventListener() {} });
+const setWide = on => {
+	wide.matches = on;
+	for (const fn of [...wide.listeners]) fn({ matches: on });
+};
+globalThis.ResizeObserver = window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+// jsdom loads no stylesheets; the desktop layout waits for dockview's, so say it arrived.
+new window.MutationObserver(records => {
+	for (const node of records.flatMap(r => [...r.addedNodes])) if (node.nodeName === 'LINK') setTimeout(() => node.dispatchEvent(new window.Event('load')));
+}).observe(window.document.head, { childList: true });
 window.confirm = globalThis.confirm = () => true;
 window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
 window.HTMLDialogElement.prototype.close = function () {
@@ -84,6 +97,10 @@ globalThis.Peer = window.Peer = FakePeer;
 
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+// The Stream tool keeps a stream 30 s for a viewer who dropped; its own timers run 100× faster here.
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms, ...args) =>
+	realSetTimeout(fn, ms >= 1000 && /\/app\/tools\/stream\.js/.test(new Error().stack) ? ms / 100 : ms, ...args);
 let failures = 0;
 function check(name, ok, extra = '') {
 	console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${extra ? ` — ${extra}` : ''}`);
@@ -153,6 +170,79 @@ if (MODE === 'start') {
 	check('Settings shows the app version and the protocol number',
 		$('#view-settings .version')?.textContent === `PeerKit ${APP_VERSION} · room protocol ${PROTOCOL_VERSION}`,
 		$('#view-settings .version')?.textContent);
+} else if (MODE === 'desktop') {
+	// A wide window with a mouse: the tools are dockview panels instead of bottom tabs.
+	const code = newRoomCode();
+	const phone = new Room({ code, ice: { forRoom: null, adopt: () => false }, identity: { id: 'bbbbbbbbbbbbbbbb', name: 'Phone' } });
+	phone.claimFirst = true;
+	phone.start();
+	await sleep(100);
+	localStorage.setItem('peerkit.room', JSON.stringify({ version: 1, current: code, rooms: [{ code, profile: PUBLIC_PROFILE, names: [], lastSeen: 0, known: true }] }));
+	await import(`${ROOT}/app/main.js`);
+
+	const groups = () => [...document.querySelectorAll('.dv-groupview')].map(group => ({
+		el: group,
+		tools: [...group.querySelectorAll('.dock-tab')].map(tab => tab.textContent),
+		front: group.querySelector('.dv-tab.dv-active-tab .dock-tab')?.textContent,
+		button: label => [...group.querySelectorAll('.dock-actions button')].find(b => b.title.startsWith(label) && !b.hidden),
+	}));
+	const groupWith = name => groups().find(group => group.tools.includes(name));
+	const tabOf = name => [...document.querySelectorAll('.dock-tab')].find(tab => tab.textContent === name);
+	const layout = () => [...groups()].map(group => group.tools.join('+')).sort().join(' | ');
+	await until('the room opens with the tools as panels and no bottom tabs', () => $('#tool-host.docked .dock') && $('#tabs').hidden && groups().length === 2, 8000);
+	await until('with the member linked', () => $('.member-chip:nth-child(2)')?.textContent === 'Phone');
+	check('the default layout: Stream and Editor in the main area, Transfer at the side', layout() === 'Stream+Editor | Transfer', layout());
+	check('the Editor is in front in the main area', groupWith('Editor').front === 'Editor');
+	// The member here runs no editor, so it never answers the sync: past "Loading" is what shows it loaded.
+	await until('and loads by itself, since it can be seen', () => /Syncing with the room|Write together/.test($('.editor-message:not([hidden])')?.textContent), 10000);
+	check('a tab can not be closed: there is no close button', !document.querySelector('.dock .dv-default-tab-action'));
+	check('Reset layout is in the top bar', visible($('#reset-layout')));
+	const editorEl = $('[data-tool="editor"]');
+	const cm = $('.cm-editor') ?? $('.editor');
+
+	// Maximize the main area: the chat at the side can't be seen, so a message there marks its tab.
+	groupWith('Editor').button('Maximize').click();
+	check('Maximize turns into Restore', Boolean(groupWith('Editor').button('Restore')));
+	phone.send(CH.TRANSFER, { type: 'text', id: 1, part: 0, parts: 1, text: 'hi from the phone' });
+	await until('a message for a tool out of sight marks its tab', () => tabOf('Transfer')?.classList.contains('notify'));
+	groupWith('Editor').button('Restore').click();
+	await until('and the mark goes when it can be seen again', () => !tabOf('Transfer').classList.contains('notify'));
+
+	// A stream that starts brings its panel to the front.
+	phone.send(CH.STREAM, { type: 'start', id: 'cam1', kind: 'camera' });
+	await until('a stream from a member brings the Stream panel to the front', () => groupWith('Stream').front === 'Stream');
+
+	// Float the chat, then narrow the window: the bottom tabs come back with the same tools, not new ones.
+	groupWith('Transfer').button('Float').click();
+	check('Float takes the chat out of the grid', Boolean(groupWith('Transfer').button('Put back')) && !groupWith('Transfer').button('Maximize'));
+	await until('the layout is saved on this device', () => JSON.parse(localStorage.getItem('peerkit.layout') ?? 'null')?.layout?.floatingGroups?.length === 1, 2000);
+	setWide(false);
+	check('a narrow window gets the bottom tabs back', !$('#tabs').hidden && !$('.dock') && $('#reset-layout').hidden && !$('#tool-host').classList.contains('docked'));
+	check('with the same tool elements, not remounted ones', $('[data-tool="editor"]') === editorEl && ($('.cm-editor') ?? $('.editor')) === cm);
+	check('and one tool shown at a time', [...document.querySelectorAll('.tool')].filter(el => !el.hidden).length === 1);
+	buttonByText($('#tabs'), 'Transfer').click();
+	check('the tabs work as on a phone', visible($('[data-tool="transfer"] .composer')) && !visible($('[data-tool="editor"]')));
+
+	// Wide again: the saved layout comes back, floating chat and all.
+	setWide(true);
+	await until('widening brings the panels back as they were', () => groups().length === 2 && Boolean(groupWith('Transfer')?.button('Put back')) && groupWith('Stream').front === 'Stream');
+	check('and the tool that was in front in the tabs is in front', groupWith('Transfer').front === 'Transfer');
+
+	// Reset layout: the default again.
+	$('#reset-layout').click();
+	await until('Reset layout brings back the default', () => layout() === 'Stream+Editor | Transfer' && Boolean(groupWith('Transfer').button('Float')) && groupWith('Editor').front === 'Editor');
+	await until('and saves it', () => {
+		const saved = JSON.parse(localStorage.getItem('peerkit.layout'))?.layout;
+		return saved && !saved.floatingGroups?.length && Object.keys(saved.panels).length === 3;
+	}, 2000);
+
+	// A saved layout that doesn't fit (another app version, or edited by hand) is ignored.
+	setWide(false);
+	localStorage.setItem('peerkit.layout', JSON.stringify({ version: 1, layout: { panels: { transfer: {}, whiteboard: {} } } }));
+	setWide(true);
+	await until('a saved layout for other tools falls back to the default', () => layout() === 'Stream+Editor | Transfer');
+	phone.send(CH.STREAM, { type: 'stop', id: 'cam1' });
+	await phone.leave();
 } else {
 	// A headless member ("Phone") already in the room.
 	const code = newRoomCode();
@@ -281,8 +371,21 @@ if (MODE === 'start') {
 	tablet.start();
 	await until('a newcomer gets the stream that was waiting', () => tabletCalls.some(call => call.metadata?.kind === 'camera'), 8000);
 	await until('and the bar names the viewer', () => $('.stream .live')?.textContent === 'Sharing camera with Tablet');
-	buttonByText($('.stream'), 'Stop').click();
+
+	// The viewer goes and is not back within the grace: the capture keeps running for whoever comes next.
 	await tablet.leave();
+	await until('the viewer leaving pauses the stream for it', () => $('.stream .live')?.textContent === 'Paused until Tablet is back…');
+	await until('after the grace it waits for anyone instead of stopping', () => $('.stream .live')?.textContent === 'Tablet left — waiting for someone to join', 3000);
+	check('with the capture still on and no "stopped" offer', !$('.stream .preview').hidden && $('.stream-resume').hidden && !buttonByText($('.stream'), 'Share camera'));
+	const back = new Room({ code, ice: { forRoom: null, adopt: () => false }, identity: { id: 'cccccccccccccccc', name: 'Tablet' } });
+	const backCalls = [];
+	back.on('call', call => backCalls.push(call));
+	back.start();
+	await until('the viewer coming back later gets the stream again', () => backCalls.some(call => call.metadata?.kind === 'camera'), 8000);
+	check('the same stream, not a new one', backCalls.find(call => call.metadata?.kind === 'camera').metadata.id === tabletCalls.find(call => call.metadata?.kind === 'camera').metadata.id);
+	await until('and the bar names the viewer again', () => $('.stream .live')?.textContent === 'Sharing camera with Tablet');
+	buttonByText($('.stream'), 'Stop').click();
+	await back.leave();
 	await until('stopping leaves the share buttons ready again', () => Boolean(buttonByText($('.stream'), 'Share camera')));
 
 	// Leave.

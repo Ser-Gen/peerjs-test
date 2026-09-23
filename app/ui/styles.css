@@ -758,6 +758,114 @@ h2 {
 	padding-bottom: 0.5rem;
 }
 
+/* --- desktop layout: dockview panels on a wide window with a mouse (app/ui/layout.js) --- */
+
+.tool-host.docked {
+	position: relative;
+}
+
+.dock {
+	position: absolute;
+	inset: 0;
+}
+
+.dock-panel {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.dock-tab.notify .dv-default-tab-content::after {
+	content: "";
+	display: inline-block;
+	width: 0.45rem;
+	height: 0.45rem;
+	margin-left: 0.35rem;
+	border-radius: 50%;
+	background: var(--accent);
+	vertical-align: middle;
+}
+
+.dock-actions {
+	height: 100%;
+	display: flex;
+	align-items: center;
+	padding: 0 0.25rem;
+}
+
+.dock-actions .icon-btn {
+	width: 28px;
+	height: 28px;
+	border-radius: 6px;
+}
+
+.dock-actions .icon-btn:hover {
+	background: var(--surface-2);
+	color: var(--text);
+}
+
+.dock-actions .icon {
+	width: 16px;
+	height: 16px;
+}
+
+/* dockview's variables, from the app's colours, so light and dark follow the system like the rest. */
+.dockview-theme-peerkit {
+	--dv-paneview-active-outline-color: var(--accent);
+	--dv-tabs-and-actions-container-font-size: 0.875rem;
+	--dv-tabs-and-actions-container-height: 36px;
+	--dv-drag-over-background-color: color-mix(in srgb, var(--accent) 22%, transparent);
+	--dv-drag-over-border-color: var(--accent);
+	--dv-edge-dock-indicator-color: var(--accent);
+	--dv-tabs-container-scrollbar-color: var(--muted);
+	--dv-icon-hover-background-color: var(--surface-2);
+	--dv-floating-box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25), 0 2px 8px rgba(0, 0, 0, 0.15);
+	--dv-floating-border: 1px solid var(--border);
+	--dv-overlay-z-index: 999;
+	--dv-tab-font-size: inherit;
+	--dv-border-radius: 0px;
+	--dv-tab-margin: 0;
+	--dv-sash-color: transparent;
+	--dv-active-sash-color: var(--accent);
+	--dv-active-sash-transition-duration: 0.1s;
+	--dv-active-sash-transition-delay: 0.3s;
+	--dv-spacing-padding: 0px;
+	--dv-tab-border-radius: 0px;
+	--dv-sash-border-radius: 0px;
+	--dv-dropdown-border-radius: 8px;
+	--dv-tab-close-icon-size: inherit;
+	--dv-floating-group-border: 1px solid var(--border);
+	--dv-drag-over-border: none;
+	--dv-floating-group-dragging-opacity: 0.6;
+	--dv-floating-titlebar-height: 22px;
+	--dv-floating-titlebar-background-color: var(--surface);
+	--dv-floating-titlebar-border-bottom: 1px solid var(--border);
+	--dv-group-view-background-color: var(--bg);
+	--dv-tabs-and-actions-container-background-color: var(--surface);
+	--dv-activegroup-visiblepanel-tab-background-color: var(--bg);
+	--dv-activegroup-hiddenpanel-tab-background-color: var(--surface);
+	--dv-inactivegroup-visiblepanel-tab-background-color: var(--bg);
+	--dv-inactivegroup-hiddenpanel-tab-background-color: var(--surface);
+	--dv-tab-divider-color: var(--border);
+	--dv-activegroup-visiblepanel-tab-color: var(--text);
+	--dv-activegroup-hiddenpanel-tab-color: var(--muted);
+	--dv-inactivegroup-visiblepanel-tab-color: var(--muted);
+	--dv-inactivegroup-hiddenpanel-tab-color: var(--muted);
+	--dv-separator-border: var(--border);
+	--dv-paneview-header-border-color: var(--border);
+	--dv-scrollbar-background-color: color-mix(in srgb, var(--muted) 45%, transparent);
+}
+
+/* The tool in front in the focused group is marked like the bottom tabs mark theirs. */
+.dockview-theme-peerkit .dv-groupview.dv-active-group .dv-tab.dv-active-tab {
+	box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.dockview-theme-peerkit .dv-tabs-and-actions-container {
+	border-bottom: 1px solid var(--border);
+}
+
 .btn.danger {
 	color: var(--bad);
 }
@@ -1707,7 +1815,7 @@ textarea.input {
 	position: fixed;
 	left: 50%;
 	bottom: calc(5rem + env(safe-area-inset-bottom));
-	z-index: 10;
+	z-index: 2000; /* above the floating panels of the desktop layout (about 1000) */
 	width: max-content;
 	max-width: calc(100vw - 2rem);
 	display: flex;
