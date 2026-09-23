@@ -151,6 +151,7 @@ export class FakeTrack {
 		this.readyState = 'live';
 		this.contentHint = '';
 		this.settings = settings;
+		this.listeners = []; // a remote track tells its receiver when media starts and stops coming through
 	}
 	getSettings() {
 		return { ...this.settings };
@@ -158,8 +159,23 @@ export class FakeTrack {
 	stop() {
 		this.readyState = 'ended';
 	}
-	addEventListener() {}
-	removeEventListener() {}
+	/** A clone is a track of its own: stopping it leaves the original alone (app/voice.js taps one for levels). */
+	clone() {
+		const copy = new FakeTrack(this.kind, this.settings);
+		copy.enabled = this.enabled;
+		copy.origin = this.origin ?? this;
+		return copy;
+	}
+	addEventListener(type, fn) {
+		this.listeners.push([type, fn]);
+	}
+	removeEventListener(type, fn) {
+		this.listeners = this.listeners.filter(([t, f]) => t !== type || f !== fn);
+	}
+	/** 'mute' when media stops coming through this track, 'unmute' when it starts. */
+	fire(type) {
+		for (const [t, fn] of [...this.listeners]) if (t === type) fn({ type });
+	}
 }
 
 let streams = 0;

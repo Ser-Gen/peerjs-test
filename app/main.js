@@ -309,11 +309,11 @@ function renderVoice() {
 			button(voice.busy ? 'Asking…' : 'Join voice', 'mic', joinVoice, `btn small${others ? ' primary' : ''}`),
 			h('span', { class: 'voice-note' }, others ? `${others} in voice` : 'Nobody is talking yet'));
 	}
-	const note = others
-		? `${voice.count} in voice${voice.listening ? ' · listening only' : ''}`
-		: voice.listening
-			? 'Listening only'
-			: 'Waiting for someone to join voice';
+	const bits = others ? [`${voice.count} in voice`] : ['Waiting for someone to join voice'];
+	if (voice.listening) bits.push('listening only');
+	// Say so while someone's audio is missing, instead of counting them in as if they could be heard.
+	if (voice.waiting.length) bits.push(others > 1 ? `connecting to ${voice.waiting.length}…` : 'connecting…');
+	const note = bits.join(' · ');
 	return h('div', { class: 'voice-bar', 'data-mine': voice.selfMark },
 		voice.listening
 			? button('Use microphone', 'mic', useMicrophone, 'btn small')
@@ -363,8 +363,11 @@ function showVoiceSheet() {
 				disabled: off,
 				oninput: e => voice.setVolume(peer.deviceId, Number(e.target.value) / 100),
 			});
+			const status = voice.statusOf(peer);
 			return h('li', { class: 'voice-row' },
-				h('span', { class: 'voice-name', style: color ? `--who: ${color}` : null }, peer.name),
+				h('span', { class: 'voice-name', style: color ? `--who: ${color}` : null },
+					peer.name,
+					status ? h('small', {}, status) : null),
 				h('button', {
 					type: 'button',
 					class: 'icon-btn small',
@@ -389,8 +392,12 @@ function showVoiceSheet() {
 			h('small', {}, 'A headset that is connected while you talk shows up here.'));
 	});
 
-	const off = room.on('members', renderList);
-	dialog.addEventListener('close', off);
+	const offMembers = room.on('members', renderList);
+	const offVoice = voice.on('change', renderList);
+	dialog.addEventListener('close', () => {
+		offMembers();
+		offVoice();
+	});
 }
 
 function renderJoining() {

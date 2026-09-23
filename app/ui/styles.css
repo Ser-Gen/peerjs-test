@@ -1319,6 +1319,17 @@ progress::-moz-progress-bar {
 	opacity: 0.7;
 }
 
+.voice-name small {
+	display: block;
+	color: var(--muted);
+	font-size: 0.75rem;
+}
+
+/* In voice, but nothing is coming through yet. */
+.member-chip[data-voice="waiting"] .icon {
+	opacity: 0.35;
+}
+
 .member-chip[data-voice="speaking"] {
 	background: color-mix(in srgb, var(--who, var(--accent)) 34%, var(--surface));
 	box-shadow: 0 0 0 2px color-mix(in srgb, var(--who, var(--accent)) 55%, transparent);

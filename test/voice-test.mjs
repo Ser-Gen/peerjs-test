@@ -42,10 +42,41 @@ Object.defineProperty(globalThis, 'navigator', {
 	configurable: true,
 });
 
-const { FakeMediaConnection, FakeMediaStream } = await import('./dom/fakenet.mjs');
+const { FakeMediaConnection, FakeMediaStream, FakeTrack } = await import('./dom/fakenet.mjs');
+globalThis.MediaStream = FakeMediaStream;
+
+// --- fake Web Audio: enough to read a level from a stream ---
+const loud = new Set(); // the tracks that are speaking right now
+const taps = []; // every stream handed to the AudioContext
+const levelOf = stream => ((stream?.getTracks() ?? []).some(track => loud.has(track.origin ?? track)) ? 0.2 : 0);
+globalThis.AudioContext = class {
+	constructor() {
+		this.state = 'running';
+	}
+	createMediaStreamSource(stream) {
+		taps.push(stream);
+		return { connect: analyser => (analyser.stream = stream), disconnect() {} };
+	}
+	createAnalyser() {
+		return {
+			fftSize: 512,
+			stream: null,
+			getByteTimeDomainData(data) {
+				data.fill(128 + Math.round(levelOf(this.stream) * 128));
+			},
+		};
+	}
+	async resume() {}
+	async close() {
+		this.state = 'closed';
+	}
+};
 const { Emitter } = await import(`${ROOT}/app/emitter.js`);
 const { Voice } = await import(`${ROOT}/app/voice.js`);
 
+const LEVEL_EVERY = 100; // the numbers app/voice.js works with
+const SPEAKING_HOLD = 400;
+const REDIAL_DELAY = 1000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const settle = () => sleep(60); // messages and calls take a few milliseconds each way
 let failures = 0;
@@ -61,6 +92,9 @@ const holder = () => ({ calls: new Set() });
 class FakeRoom extends Emitter {
 	constructor(name, peerId) {
 		super();
+		this.state = 'open';
+		this.signalingLost = false;
+		this.offline = false; // the signaling server is away: peerjs can make no call
 		this.self = { peerId, deviceId: `dev-${name}`, name, color: '#2f6fed' };
 		this.linked = new Map(); // peerId → FakeRoom
 		this.calls = []; // every call this member made
@@ -84,7 +118,7 @@ class FakeRoom extends Emitter {
 	/** One media call, wired to the answering side the way the fake network does it. */
 	call(to, stream, metadata) {
 		const room = this.linked.get(to);
-		if (!room) return null;
+		if (!room || this.offline) return null;
 		const mine = new FakeMediaConnection(holder(), to, metadata, stream ?? null);
 		const theirs = new FakeMediaConnection(holder(), this.self.peerId, metadata, null);
 		mine.other = theirs;
@@ -141,7 +175,34 @@ check('both hear the other, over that one call',
 	hears(a, b) === b.voice.stream && hears(b, a) === a.voice.stream,
 	`${hears(a, b)?.id} / ${hears(b, a)?.id}`);
 check('each side counts two in voice', a.voice.count === 2 && b.voice.count === 2);
+
+// Chrome gives a remote stream either to the <audio> element or to Web Audio, never both.
+const tapB = peerOf(a, b).level?.owned;
+check('the level of another member is read from a copy of the track, so the audio keeps playing',
+	Boolean(tapB) && tapB !== hears(a, b) && tapB.getAudioTracks()[0].origin === b.voice.stream.getAudioTracks()[0],
+	tapB ? `${tapB.id} vs ${hears(a, b)?.id}` : 'nothing was tapped');
+check('this device reads its own microphone straight, because nothing is playing it', taps.includes(a.voice.stream));
+
+loud.add(b.voice.stream.getAudioTracks()[0]);
+await sleep(LEVEL_EVERY * 2);
+check('a member who speaks is marked, from the copy', a.voice.mark(b.room.self.peerId) === 'speaking');
+loud.clear();
+await sleep(SPEAKING_HOLD + LEVEL_EVERY);
+check('and stops being marked when it goes quiet', a.voice.mark(b.room.self.peerId) === 'on');
 check('and shows the other as unmuted', a.voice.mark(b.room.self.peerId) === 'on' && b.voice.mark(a.room.self.peerId) === 'on');
+
+// --- a call that carries nothing ---
+
+const bTrack = b.voice.stream.getAudioTracks()[0];
+bTrack.muted = true;
+bTrack.fire('mute');
+check('a call that stops carrying media is not someone who can be heard',
+	a.voice.mark(b.room.self.peerId) === 'waiting' && a.voice.waiting.length === 1
+	&& a.voice.statusOf(peerOf(a, b)) === 'No sound coming through');
+bTrack.muted = false;
+bTrack.fire('unmute');
+check('and is heard again when media comes back, without remaking the call',
+	a.voice.mark(b.room.self.peerId) === 'on' && callBetween(a, b)?.closed === false);
 
 // --- mute ---
 
@@ -174,18 +235,37 @@ mic.available = true;
 await settle();
 check('a device with no microphone joins as a listener', c.voice.active && c.voice.listening && c.voice.muted && Boolean(note), note);
 check('the others show it muted', a.voice.mark(c.room.self.peerId) === 'muted' && b.voice.mark(c.room.self.peerId) === 'muted');
+check('a listener is not someone we are waiting to hear', a.voice.waiting.length === 0 && a.voice.statusOf(peerOf(a, c)) === 'Listening only');
 check('a listener never dials: the others call it', c.room.calls.length === 0 && a.room.calls.length === 2 && b.room.calls.length === 1);
 check('it hears both of them', hears(c, a) === a.voice.stream && hears(c, b) === b.voice.stream);
 check('and they get no audio from it', hears(a, c) === null && hears(b, c) === null);
 check('every pair has exactly one call',
 	[[a, b], [a, c], [b, c]].every(([x, y]) => callBetween(x, y) && callBetween(y, x) && callBetween(x, y).answered !== callBetween(y, x).answered));
 
+// --- a call that connects but never carries audio ---
+
+check('a call that has brought audio is not waited for any more', peerOf(a, b).watch === null && peerOf(b, a).watch === null);
+check('and a listener is never waited for: it has nothing to send back', peerOf(a, c).watch === null);
+const stalled = callBetween(a, b);
+const warn = console.warn;
+console.warn = () => {};
+a.voice.stalled(peerOf(a, b), stalled);
+await settle();
+console.warn = warn;
+check('a call that brought no audio is given up on', stalled.closed === true && callBetween(a, b) === null);
+await sleep(REDIAL_DELAY + 100);
+check('and the pair is dialled again, so silence is not forever',
+	callBetween(a, b)?.closed === false && hears(a, b) === b.voice.stream && hears(b, a) === a.voice.stream);
+
 // --- a link that drops and comes back after a reload ---
 
 const callBefore = callBetween(a, b);
+const tapA = peerOf(b, a).level?.owned;
 unlink(a, b);
 await settle();
 check('a dropped link closes that call and forgets the member', callBefore.closed === true && !peerOf(a, b) && a.voice.count === 2);
+check('the copy that was reading the level is stopped, the microphone it copied is not',
+	tapA?.getAudioTracks()[0].readyState === 'ended' && a.voice.stream.getAudioTracks()[0].readyState === 'live');
 check('the members still linked keep talking', hears(c, a) === a.voice.stream && hears(c, b) === b.voice.stream);
 
 // A reload drops every link and comes back with a new peer ID.
@@ -221,6 +301,26 @@ await settle();
 check('leaving stops the microphone and closes the calls', track.readyState === 'ended' && callToC.closed === true && a.voice.stream === null);
 check('the others drop the mark and the audio', c.voice.mark(a.room.self.peerId) === null && hears(c, a) === null);
 check('and those who stay keep hearing each other', hears(c, b) === b.voice.stream && b.voice.mark(c.room.self.peerId) === 'muted');
+
+// --- the signaling server was away when the pair should have called ---
+
+const e = member('Kitchen', 'pk-m-e');
+const f = member('Studio', 'pk-m-f');
+link(e, f);
+e.room.offline = f.room.offline = true;
+await e.voice.join();
+await f.voice.join();
+await settle();
+check('a call cannot be made while the signaling server is away', callBetween(e, f) === null && e.voice.count === 2);
+check('and the member is marked as one we cannot hear yet, not as connected',
+	e.voice.mark(f.room.self.peerId) === 'waiting' && e.voice.waiting.length === 1 && e.voice.statusOf(peerOf(e, f)) === 'No call yet');
+e.room.offline = f.room.offline = false;
+e.room.emit('state', 'open');
+await settle();
+check('when it comes back the pair calls by itself, without rejoining voice',
+	hears(e, f) === f.voice.stream && hears(f, e) === e.voice.stream);
+check('and only then does it count as someone who can be heard',
+	e.voice.mark(f.room.self.peerId) === 'on' && e.voice.waiting.length === 0 && e.voice.statusOf(peerOf(e, f)) === null);
 
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);

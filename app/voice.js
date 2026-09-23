@@ -8,7 +8,9 @@ const LEVEL_EVERY = 100; // ms between level samples
 const SPEAKING_LEVEL = 0.05; // RMS above which someone counts as speaking
 const SPEAKING_HOLD = 400; // ms the mark stays after the level drops, so it doesn't flicker
 const REDIAL_DELAY = 1000;
-const REDIAL_TRIES = 5;
+const REDIAL_TRIES = 5; // after this many quick tries the pair keeps trying, slowly, while both are in voice
+const SLOW_REDIAL = 15000;
+const CALL_TIMEOUT = 10000; // ms to wait for the audio of a call before dialing again
 
 /*
  * Voice in the room: an open microphone with a mute button, for everyone who joins it.
@@ -46,6 +48,7 @@ export class Voice extends Emitter {
 			room.on('call', (call, member) => this.onCall(call, member)),
 			room.on('link-up', member => this.onLinkUp(member)),
 			room.on('link-down', member => this.onLinkDown(member)),
+			room.on('state', () => this.onState()),
 		];
 	}
 
@@ -67,11 +70,32 @@ export class Voice extends Emitter {
 		return this.others.length + (this.active ? 1 : 0);
 	}
 
-	/** 'speaking' | 'muted' | 'on' for a member in voice, null for one who isn't. */
+	/** 'waiting' | 'speaking' | 'muted' | 'on' for a member in voice, null for one who isn't. */
 	mark(peerId) {
 		const peer = this.peers.get(peerId);
 		if (!peer?.active) return null;
-		return peer.muted ? 'muted' : peer.speaking ? 'speaking' : 'on';
+		if (peer.muted) return 'muted'; // a listener is muted too
+		if (peer.mic && !this.hearable(peer)) return 'waiting'; // in voice, but nothing is coming through
+		return peer.speaking ? 'speaking' : 'on';
+	}
+
+	/** Their audio is here and media is actually running through it. */
+	hearable(peer) {
+		return Boolean(peer.audio) && peer.flowing;
+	}
+
+	/** Members in voice we cannot hear yet. A listener sends nothing, so it is never one of them. */
+	get waiting() {
+		return this.others.filter(peer => peer.mic && !this.hearable(peer));
+	}
+
+	/** What is happening with one member, for the voice sheet. Null when there is nothing to say. */
+	statusOf(peer) {
+		if (!peer.mic) return 'Listening only';
+		if (!peer.call) return 'No call yet';
+		if (!peer.audio) return 'Connecting…';
+		if (!peer.flowing) return 'No sound coming through';
+		return null;
 	}
 
 	get selfMark() {
@@ -181,6 +205,16 @@ export class Voice extends Emitter {
 		this.changed();
 	}
 
+	/** A call needs the signaling server: when it comes back, pick up the pairs that were left without one. */
+	onState() {
+		if (!this.active || this.room.state !== 'open' || this.room.signalingLost) return;
+		for (const peer of this.peers.values()) {
+			if (!peer.active || peer.call) continue;
+			peer.tries = 0;
+			this.sync(peer);
+		}
+	}
+
 	onMessage(msg, member) {
 		if (msg?.type !== 'state') return;
 		const peer = this.peerFor(member);
@@ -223,8 +257,11 @@ export class Voice extends Emitter {
 				level: null,
 				since: 0,
 				speaking: false,
+				flowing: false, // media is running through their audio, not just a call that exists
+				unflow: null,
 				tries: 0,
 				timer: null,
+				watch: null,
 			};
 			this.peers.set(member.peerId, peer);
 		}
@@ -244,10 +281,11 @@ export class Voice extends Emitter {
 
 	attach(peer, call) {
 		peer.call = call;
+		// A listener sends nothing back, so only a member with a microphone is waited for.
+		peer.watch = peer.mic ? setTimeout(() => this.stalled(peer, call), CALL_TIMEOUT) : null;
 		call.on('stream', stream => {
 			if (peer.call !== call) return;
-			peer.tries = 0;
-			this.play(peer, stream);
+			this.play(peer, stream); // the wait ends when media comes through it, not when it arrives
 			this.changed();
 		});
 		call.on('close', () => {
@@ -260,21 +298,43 @@ export class Voice extends Emitter {
 		call.on('error', err => console.warn('[peerkit] voice call error', err));
 	}
 
-	/** A call that fell over while both sides are still in voice: try again, a few times. */
+	/**
+	 * A call that fell over, or was never made, while both sides are still in voice. A few quick tries, then
+	 * one every 15 s: giving up for good would leave a pair silent with nothing to do about it but rejoin.
+	 */
 	retry(peer) {
 		clearTimeout(peer.timer);
 		peer.timer = null;
-		if (!this.active || !peer.active || !this.stream || peer.tries >= REDIAL_TRIES) return;
+		if (!this.active || !peer.active || !this.stream) return;
 		peer.tries++;
 		peer.timer = setTimeout(() => {
 			peer.timer = null;
 			if (this.room.member(peer.peerId)) this.sync(peer);
-		}, REDIAL_DELAY);
+		}, peer.tries <= REDIAL_TRIES ? REDIAL_DELAY : SLOW_REDIAL);
+		this.changed();
+	}
+
+	/** A call that connected but never carried audio: half a negotiation is silence forever, so start over. */
+	stalled(peer, call) {
+		if (peer.call !== call) return;
+		if (peer.muted) {
+			// Nothing is expected from them while they are muted; keep the wait running for when they speak.
+			peer.watch = setTimeout(() => this.stalled(peer, call), CALL_TIMEOUT);
+			return;
+		}
+		const pc = call.peerConnection;
+		// The state of the connection is the only clue there is when a call goes nowhere, so say it out loud.
+		console.warn(`[peerkit] no audio from ${peer.name}; dialing again`,
+			{ ice: pc?.iceConnectionState, connection: pc?.connectionState, signaling: pc?.signalingState });
+		this.endCall(peer); // the other side sees it close and dials back if it is the one that dials
+		this.retry(peer);
 	}
 
 	endCall(peer) {
 		clearTimeout(peer.timer);
+		clearTimeout(peer.watch);
 		peer.timer = null;
+		peer.watch = null;
 		const call = peer.call;
 		peer.call = null;
 		try {
@@ -297,7 +357,44 @@ export class Voice extends Emitter {
 			this.blocked = true;
 			this.changed();
 		});
-		peer.level = this.analyse(stream);
+		peer.level = this.analyse(tap(stream), true);
+		this.follow(peer, stream);
+	}
+
+	/**
+	 * A track handed over by a call is `muted` until the first media arrives through it, and says so when it
+	 * does. That is the difference between a call that exists and a member who can be heard, and it is what
+	 * the wait on a call ends on: a call that connects and then carries nothing is silence with no complaint.
+	 */
+	follow(peer, stream) {
+		peer.unflow?.();
+		const [track] = stream?.getAudioTracks?.() ?? [];
+		if (typeof track?.addEventListener !== 'function') {
+			peer.flowing = true; // nothing to go by: take the sound as being there
+			this.heard(peer);
+			return;
+		}
+		const update = () => {
+			peer.flowing = track.muted !== true;
+			if (peer.flowing) this.heard(peer);
+			this.changed();
+		};
+		track.addEventListener('mute', update);
+		track.addEventListener('unmute', update);
+		peer.unflow = () => {
+			track.removeEventListener('mute', update);
+			track.removeEventListener('unmute', update);
+			peer.unflow = null;
+		};
+		peer.flowing = track.muted !== true;
+		if (peer.flowing) this.heard(peer);
+	}
+
+	/** Media has come through from this member: the call is done connecting. */
+	heard(peer) {
+		clearTimeout(peer.watch);
+		peer.watch = null;
+		peer.tries = 0;
 	}
 
 	makeAudio() {
@@ -315,6 +412,8 @@ export class Voice extends Emitter {
 	stopAudio(peer) {
 		peer.speaking = false;
 		peer.since = 0;
+		peer.unflow?.();
+		peer.flowing = false;
 		disconnect(peer.level);
 		peer.level = null;
 		if (!peer.audio) return;
@@ -329,17 +428,21 @@ export class Voice extends Emitter {
 		peer.audio.muted = this.mutedFor(peer.deviceId);
 	}
 
-	/** The others play through <audio> elements, so the browser's echo cancellation sees them; this only reads levels. */
-	analyse(stream) {
+	/**
+	 * Read the level of a stream. `owned` means this stream was made here (a tap) and is stopped with it.
+	 * The others play through <audio> elements, so the browser's echo cancellation sees them; this only reads.
+	 */
+	analyse(stream, owned = false) {
 		const Ctx = globalThis.AudioContext ?? globalThis.webkitAudioContext;
 		if (!Ctx || !stream) return null;
 		try {
 			this.audioCtx ??= new Ctx();
+			this.audioCtx.resume?.().catch?.(() => {}); // a context made before the tap starts suspended
 			const source = this.audioCtx.createMediaStreamSource(stream);
 			const analyser = this.audioCtx.createAnalyser();
 			analyser.fftSize = 512;
 			source.connect(analyser); // not connected to the output: nothing here plays
-			return { source, analyser, data: new Uint8Array(analyser.fftSize) };
+			return { source, analyser, data: new Uint8Array(analyser.fftSize), owned: owned ? stream : null };
 		} catch {
 			return null; // no levels then; everything else works
 		}
@@ -509,6 +612,25 @@ function disconnect(entry) {
 		entry?.source.disconnect();
 	} catch {
 		// the context is already closed
+	}
+	stopStream(entry?.owned);
+}
+
+/*
+ * A copy of a stream's audio, for reading its level.
+ *
+ * Chrome sends a remote stream either to a media element or into Web Audio, not to both: an AnalyserNode
+ * made from the stream an <audio> element is playing takes the sound away from it, and since nothing here
+ * connects to the output, the member goes silent while the speaking mark still works. So the levels read a
+ * clone of the track, and the element keeps the stream it was given. Without clone() there are no marks.
+ */
+function tap(stream) {
+	const [track] = stream?.getAudioTracks?.() ?? [];
+	if (typeof track?.clone !== 'function' || typeof MediaStream !== 'function') return null;
+	try {
+		return new MediaStream([track.clone()]);
+	} catch {
+		return null;
 	}
 }
 

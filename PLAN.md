@@ -461,7 +461,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
   - The limit is 8 devices, not about 6.
   - Transfer text and files reach only directly linked members; forwarding covers documents and cursors, and the synced chat comes in Slice 9.
   - The Direct/Relayed route per member is in the chip tooltip.
-- Checked in Node, not in a browser. Since 2026-09-23 these tests live in `test/` and run with `node test/run.mjs` (183 checks in all):
+- Checked in Node, not in a browser. Since 2026-09-23 these tests live in `test/` and run with `node test/run.mjs` (199 checks in all):
   - `room-test.mjs`: a room simulation on a fake peerjs network with a virtual clock (30 checks, 20 runs in a row).
   - `dom/app-test.mjs`: the whole app in jsdom with a second, headless member (46 checks in a room, 14 on the start screen).
   - `editor-sync-test.mjs`: the editor provider with 3–4 members, including forwarding (14 checks).
@@ -525,10 +525,10 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - One call per pair, with metadata `{kind: 'voice'}`: the member with a microphone dials, the lower peer ID when both have one, and the other answers with its own microphone.
 - **Not in the plan: a listener.** A device with no microphone, or one where the prompt was refused, still joins — it hears the room, shows as muted to everyone, never dials, and gets a **Use microphone** button to take part after all. So the state message is `{on, muted, mic}`, and the room works on `http://<lan-ip>`, where there is no microphone at all.
 - Mute is `track.enabled = false` plus a message; joining and leaving re-make the calls, because peerjs cannot renegotiate.
-- Who is speaking comes from a Web Audio `AnalyserNode` per stream and stays on the device. Without Web Audio everything works except the marks. The chips show a ring while someone speaks and a crossed-out microphone when they are muted.
+- Who is speaking comes from a Web Audio `AnalyserNode` per stream and stays on the device. The others' levels are read from a **copy** of the track (see 0.8.2 below). Without Web Audio everything works except the marks. The chips show a ring while someone speaks and a crossed-out microphone when they are muted.
 - A link that drops closes that call and forgets the member; when the link is back (a reload brings a new peer ID) the calls are made again by themselves. A call that falls over on its own is retried up to 5 times, a second apart.
 - The Stream tool now ignores media calls whose kind is not `camera` or `screen`, and mutes a camera's own microphone while voice is on, so nobody is heard twice.
-- Tests: `test/voice-test.mjs` (27 checks) on a faked room with the media connections from `dom/fakenet.mjs`, which gained a real `call()`, `FakeMediaConnection` and `FakeMediaStream`; the jsdom app test gained 11 checks for the bar, the chips and the call to a member in voice.
+- Tests: `test/voice-test.mjs` (43 checks after 0.8.2) on a faked room with the media connections from `dom/fakenet.mjs`, which gained a real `call()`, `FakeMediaConnection` and `FakeMediaStream`; the jsdom app test gained 11 checks for the bar, the chips and the call to a member in voice.
 - Checked in Node, not in a browser: the checklist below is still to do.
 
 **Checklist**
@@ -835,6 +835,18 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 - The first member to arrive gets it (`onLinkUp` fills in the viewer, calls and says "Sharing with *name*"). With several already in the room the picker is unchanged.
 - The stream is a `stop` message to one member, so it is only sent when there is one; the resume bar after a reload no longer waits for company either.
 - Covered in the jsdom app test: the buttons work while alone, the bar says it is waiting, and a newcomer receives the camera call.
+
+### Nobody could be heard (2026-09-23, 0.8.2)
+
+**Why:** two devices joined voice, each saw the other counted in ("2 in voice") and its own badge lit up with its own voice — and neither heard a sound, with nothing in the console. The bar counted a member as soon as it said it was in voice, whether or not a single byte of audio had ever arrived from it, so there was no way to tell where it stopped.
+
+**As built**
+- **It says where it stops.** A member in voice who cannot be heard is marked `waiting` (a dimmed microphone on the chip) instead of `on`, the voice row adds "connecting…", and the voice sheet says per member "Listening only", "No call yet", "Connecting…" or "No sound coming through". `voice.waiting` and `voice.statusOf(peer)` are what the UI reads.
+- **"Can be heard" is not "is in voice".** A track handed over by a call is `muted` until the first media comes through it and fires `unmute` when it does, so that, not the arrival of the call, is what ends the wait. A call that connects and then carries nothing was the one failure the count could not see — and it is what the report describes.
+- **It keeps trying.** A call that connects but never delivers audio is closed and dialled again after 10 s (a listener sends none, so it is never waited for); a pair left without a call because the signaling server was away calls as soon as the room reports it is back; and the redial no longer gives up for good after five tries — it slows down to one every 15 s while both are in voice. When a call is given up on, the console gets the ICE, connection and signaling state of it, which is the only clue a stalled call leaves.
+- **A silence that was in the code**: `analyse()` handed the `<audio>` element's own stream to an `AnalyserNode`. Chrome gives a remote stream to a media element **or** to Web Audio, not both, so the sound went into the Web Audio graph, which connects to nothing. The levels now read a clone of the remote track (`tap()`), the clone is stopped with the call, and this device's own microphone is still read straight, because nothing is playing it. That one makes a member silent *while* the speaking mark works, which is not what was reported, so it was not the whole story — but it would have been the next bug.
+- `test/voice-test.mjs` grew from 27 to 43 checks: a fake Web Audio that reads a level, the copy the analyser gets against the stream the element plays, the copy stopped with the call, `waiting` / `statusOf` before and after a call comes up, a call that stops carrying media and comes back without being remade, the redial after a call with no audio, and the pair that calls by itself when signaling returns.
+- Still to find out on real devices: where the voice sheet says it stops — "No call yet", "Connecting…" or "No sound coming through" — and what ICE state the console prints when a call is given up on.
 
 ## Backlog (to triage)
 
