@@ -11,13 +11,14 @@ import { renderQR } from './ui/qr.js';
 import { SettingsView } from './ui/settings-view.js';
 import { StartView } from './ui/start-view.js';
 import { claimTab, copyText } from './util.js';
-import { roomDocName } from './roomdoc.js';
+import { boardDocName, roomDocName } from './roomdoc.js';
 import chat from './tools/chat/chat.js';
 import { deleteRoomFiles } from './tools/chat/kept.js';
 import editor from './tools/editor/editor.js';
 import stream from './tools/stream.js';
+import whiteboard from './tools/whiteboard/whiteboard.js';
 
-const TOOLS = [chat, stream, editor].filter(tool => tool.supported());
+const TOOLS = [chat, stream, editor, whiteboard].filter(tool => tool.supported());
 
 const INVITE_KEY = 'peerkit.invite'; // sessionStorage: the new room whose invite sheet opens once it is ready
 const SERVER_ERRORS = new Set(['network', 'server-error', 'socket-error', 'socket-closed', 'disconnected', 'invalid-key', 'ssl-unavailable']);
@@ -524,7 +525,7 @@ function showLeave() {
 	const dialog = openDialog(h('div', { class: 'sheet-body' },
 		h('h2', {}, 'Leave this room?'),
 		h('p', { class: 'hint' }, 'The others stay in the room. You can come back from Recent rooms or with the code.'),
-		h('p', { class: 'hint' }, '“Leave and forget” also deletes the room’s documents, chat and kept files from this device; the others keep theirs.'),
+		h('p', { class: 'hint' }, '“Leave and forget” also deletes the room’s documents, boards, chat and kept files from this device; the others keep theirs.'),
 		h('div', { class: 'actions end' },
 			button('Cancel', null, () => dialog.close(), 'btn ghost'),
 			button('Leave and forget', 'trash', () => leaveRoom(true), 'btn danger'),
@@ -557,13 +558,13 @@ function openRoom({ code, profile }) {
 }
 
 async function forgetRoom(saved) {
-	if (!confirm(`Forget the room ${saved.code}?\n\nIts documents, chat and kept files are deleted from this device. The others in the room keep theirs.`)) return;
+	if (!confirm(`Forget the room ${saved.code}?\n\nIts documents, boards, chat and kept files are deleted from this device. The others in the room keep theirs.`)) return;
 	roomStore.forget(saved.code);
 	await deleteRoomData(saved.code);
 	toast('Room forgotten');
 }
 
-/** Delete what this device keeps for a room: the editor's documents, the chat and the kept files. */
+/** Delete what this device keeps for a room: the editor's documents, the boards, the chat and the kept files. */
 function deleteRoomData(code) {
 	const { id } = roomIds(code);
 	const deleteDatabase = name => new Promise(resolve => {
@@ -575,7 +576,12 @@ function deleteRoomData(code) {
 			resolve();
 		}
 	});
-	return Promise.all([deleteDatabase(`peerkit.doc:${id}`), deleteDatabase(roomDocName(id)), deleteRoomFiles(id).catch(() => {})]);
+	return Promise.all([
+		deleteDatabase(`peerkit.doc:${id}`),
+		deleteDatabase(roomDocName(id)),
+		deleteDatabase(boardDocName(id)),
+		deleteRoomFiles(id).catch(() => {}),
+	]);
 }
 
 /** Back to the start screen. A room that never opened here and wasn't known is dropped from the list. */
@@ -694,7 +700,7 @@ function mountTools() {
 		},
 		/** Called each time the tool comes into view (its tab or panel); returns an unsubscribe function. */
 		onShow: fn => layout.onShow(tool.id, fn),
-		/** Give a file to another tool and bring it to the front, e.g. the viewer's "Open as shared document". */
+		/** Give a file to another tool and bring it to the front: the viewer's "Open as shared document", a board sent to the Chat. */
 		handOff: (to, file) => {
 			const fn = handOffs.get(to);
 			if (!fn) return false;

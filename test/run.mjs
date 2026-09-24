@@ -1,6 +1,6 @@
 // Runs the Node tests. Usage:
 //   node test/run.mjs                 every test once
-//   node test/run.mjs room            one test by name (room | editor-sync | voice | pwa | vendor | app | start | desktop | editor | chat)
+//   node test/run.mjs room            one test by name (room | editor-sync | voice | pwa | vendor | app | start | desktop | editor | chat | whiteboard)
 //   node test/run.mjs room --times 20 repeat it, which is how the random anchor handover is checked
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -20,6 +20,7 @@ const TESTS = [
 	{ name: 'desktop', file: 'dom/app-test.mjs', args: ['desktop'], jsdom: true, about: 'the desktop layout: panels, float, maximize, back to tabs' },
 	{ name: 'editor', file: 'dom/editor-test.mjs', args: [], jsdom: true, about: 'the Editor tool with two members, in jsdom' },
 	{ name: 'chat', file: 'dom/chat-test.mjs', args: [], jsdom: true, about: 'the Chat: history, kept files, the viewer, the storage limit' },
+	{ name: 'whiteboard', file: 'dom/whiteboard-test.mjs', args: [], jsdom: true, about: 'the Whiteboard: drawing together, undo, images from the clipboard, export' },
 ];
 
 const argv = process.argv.slice(2);

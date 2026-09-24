@@ -1704,6 +1704,192 @@ progress::-moz-progress-bar {
 	font-size: 0.8rem;
 }
 
+/* --- whiteboard tool --- */
+
+.whiteboard {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.wb-body {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+/* Paper in both colour schemes: images and ink look the same on every device. */
+.wb-stage {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+	background: #ffffff;
+	cursor: crosshair;
+	/* Every touch is the board's: drawing, panning and pinching, never scrolling or zooming the page. */
+	touch-action: none;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
+	outline: none;
+}
+
+.wb-stage:focus-visible {
+	box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.wb-stage[data-tool="select"] {
+	cursor: default;
+}
+
+.wb-stage[data-tool="eraser"] {
+	cursor: none;
+}
+
+.wb-canvas {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+.wb-tools {
+	display: flex;
+	align-items: center;
+	gap: 0.1rem;
+	padding: 0.2rem max(0.25rem, env(safe-area-inset-right)) 0.2rem max(0.25rem, env(safe-area-inset-left));
+	background: var(--surface);
+	border-top: 1px solid var(--border);
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+
+.wb-tools .icon-btn {
+	width: 40px;
+	height: 40px;
+}
+
+.wb-tools .icon-btn[aria-pressed="true"] {
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
+	color: var(--accent);
+}
+
+.wb-tools .push {
+	margin-left: auto;
+}
+
+.wb-sep {
+	flex: none;
+	width: 1px;
+	height: 24px;
+	margin: 0 0.25rem;
+	background: var(--border);
+}
+
+/* The colour and size of the pen (a round dot) or the highlighter (a square one). */
+.wb-swatch {
+	width: 26px;
+	height: 26px;
+	display: grid;
+	place-items: center;
+	border: 2px solid var(--border);
+	border-radius: 50%;
+	background: #ffffff;
+}
+
+.wb-swatch::after {
+	content: "";
+	width: var(--dot, 8px);
+	height: var(--dot, 8px);
+	border-radius: 50%;
+	background: var(--ink, #1e1e1e);
+	box-shadow: 0 0 0 1px rgb(0 0 0 / 0.15);
+}
+
+.wb-swatch[data-kind="highlighter"]::after {
+	border-radius: 2px;
+	opacity: 0.7;
+}
+
+.wb-popover {
+	position: absolute;
+	bottom: 0.5rem;
+	left: 0.5rem;
+	z-index: 2;
+	width: max-content;
+	max-width: calc(100% - 1rem);
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+	padding: 0.75rem;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+
+.wb-popover[data-menu="image"] {
+	left: auto;
+	right: 0.5rem;
+}
+
+.wb-popover .hint {
+	max-width: 16rem;
+	margin: 0;
+}
+
+.wb-swatches {
+	display: grid;
+	grid-template-columns: repeat(4, 36px);
+	gap: 0.5rem;
+}
+
+.wb-color {
+	width: 36px;
+	height: 36px;
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: 50%;
+	background: var(--ink);
+	cursor: pointer;
+}
+
+.wb-color[aria-pressed="true"] {
+	box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+}
+
+.wb-sizes {
+	display: flex;
+	gap: 0.5rem;
+}
+
+.wb-size {
+	width: 48px;
+	height: 36px;
+	display: grid;
+	place-items: center;
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	background: var(--surface);
+	cursor: pointer;
+}
+
+.wb-size span {
+	width: var(--dot);
+	height: var(--dot);
+	border-radius: 50%;
+	background: var(--text);
+}
+
+.wb-size[aria-pressed="true"] {
+	border-color: var(--accent);
+	box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 /* --- settings --- */
 
 .settings {

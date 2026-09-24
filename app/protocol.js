@@ -9,6 +9,7 @@ export const CH = {
 	VOICE: 'voice', // who is in the room's voice conversation (app/voice.js)
 	DOC: 'doc', // shared editor: Yjs sync and awareness (app/docsync.js)
 	ROOM: 'room', // the room document: the chat and its file list, Yjs sync like DOC (app/roomdoc.js)
+	BOARD: 'board', // the whiteboard's boards, Yjs sync and awareness like DOC (app/tools/whiteboard/)
 };
 
 /*
@@ -43,6 +44,8 @@ export const CH = {
  *
  * Version 6 moved the chat into the room document (ch: 'room'): a version-5 device sends text as
  * `transfer` messages that a version-6 device no longer reads, so the two refuse to link.
+ * The whiteboard's channel ('board') came later without a new version: a device that has no whiteboard yet
+ * ignores the channel, and syncs the boards once it has one.
  */
 
 // peerjs DataConnection labels.

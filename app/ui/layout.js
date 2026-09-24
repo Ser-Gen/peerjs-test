@@ -41,13 +41,18 @@ function loadStylesheet(href) {
 	});
 }
 
-/** The saved layout, if it holds exactly these tools: a tool added or gone since means starting from the default. */
+/**
+ * The saved layout and the tools it doesn't have yet (added to the app since it was saved), or null when there is
+ * none or it holds a tool this version doesn't have: then the default is used.
+ */
 function savedLayout(ids) {
 	const saved = readJSON(LAYOUT_KEY);
 	const layout = saved?.version === LAYOUT_VERSION ? saved.layout : null;
 	if (!layout || typeof layout !== 'object' || !layout.panels || typeof layout.panels !== 'object') return null;
 	if (Array.isArray(layout.popoutGroups) && layout.popoutGroups.length) return null; // never made here
-	return Object.keys(layout.panels).sort().join('\n') === [...ids].sort().join('\n') ? layout : null;
+	const panels = Object.keys(layout.panels);
+	if (!panels.length || panels.some(id => !ids.includes(id))) return null;
+	return { layout, missing: ids.filter(id => !panels.includes(id)) };
 }
 
 function setButton(button, label, name) {
@@ -295,10 +300,12 @@ export class ToolLayout {
 	}
 
 	restore() {
-		const layout = savedLayout(this.items.keys());
-		if (!layout) return false;
+		const saved = savedLayout([...this.items.keys()]);
+		if (!saved) return false;
 		try {
-			this.dock.fromJSON(layout);
+			this.dock.fromJSON(saved.layout);
+			for (const id of saved.missing) this.addNew(id);
+			if (saved.missing.length) this.save();
 			return true;
 		} catch (err) {
 			console.warn('[peerkit] the saved layout could not be restored', err);
@@ -310,6 +317,20 @@ export class ToolLayout {
 			}
 			return false;
 		}
+	}
+
+	/** A tool the saved layout didn't know yet: a tab in the main area, behind the one in front there. */
+	addNew(id) {
+		const panels = this.dock.panels.map(panel => panel.id);
+		const main = panels.filter(other => !this.side.includes(other));
+		const reference = main.includes(this.front) ? this.front : main[0] ?? panels[0];
+		this.dock.addPanel({
+			id,
+			component: 'tool',
+			title: this.items.get(id).title,
+			...(reference && { position: { referencePanel: reference, direction: 'within' } }),
+			inactive: true,
+		});
 	}
 
 	/** The default: the side tools in a column on the right, the others as tabs in the main area. */

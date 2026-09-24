@@ -61,7 +61,7 @@ app/
     chat/               (Slice 9, was transfer.js) the room chat: timeline, kept files, file transfers, the viewer
     stream.js           camera / screen
     editor/             shared editor: tool UI + Yjs provider over the session
-    whiteboard/         (Slice 13) shared drawing
+    whiteboard/         (Slice 13) boards drawn together: the tool, boards in their own Y.Doc, the canvas, stroke geometry, images
     controller.js       phone-as-gamepad + gyro
     monitor.js          host-side input visualizer
     nes/                NES tool + frame.html that hosts the emulator
@@ -699,12 +699,38 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - Strokes are simplified before they're stored. Other members' pens show live through awareness.
 - Export as PNG, and send it to Chat.
 
+**As built** (2026-09-24, app 0.13.0, `PROTOCOL_VERSION` 6 — after Slices 9 and 10 and before 11 and 12, on request, with images from the clipboard added to it)
+- **Whiteboard** (`app/tools/whiteboard/`, tool id `whiteboard`): a fourth tab on phones; on a wide screen a panel in the main area beside Stream and Editor. A desktop layout saved before it now keeps its arrangement, and the Whiteboard joins the main area as a tab behind the one in front: adding a tool no longer resets a saved layout.
+- **Boards**: a list like the Editor's documents (the board button, **New board**, the name, **Delete** for everyone) and **Clear**, which undo brings back. Each device reopens the board it last had open in the room.
+- **Tools** in a bar under the board: **Select and move**, **Pen**, **Highlighter** and **Eraser** (keys V, P, H, E); a colour and size popover (8 colours and 3 sizes, one choice for the pen and one for the highlighter, remembered on the device in `peerkit.whiteboard`); **Undo** and **Redo** at the top (and Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y).
+  - The pen follows a stylus's pressure; a mouse and a finger draw evenly. The highlighter is see-through and blends with what is under it.
+  - The eraser takes the strokes and images it touches, shown faded until it lifts; one gesture is one undo step.
+  - Select: tap to select, drag to move a stroke or an image, drag an image's corner to resize it in proportion, Delete (or the bin) to remove.
+- **Pan and zoom**: two fingers, the wheel and Ctrl+wheel (a touchpad pinch), Space or the middle button, and **Show the whole board**. A pinch draws nothing: a stroke that began less than 250 ms before the second finger landed is dropped. Once a stylus has drawn on a device, fingers pan there, so a palm on the screen draws nothing.
+- **Live**: a stroke being drawn reaches the others through awareness (up to 15 updates a second), and so do mouse pointers, with names; the finished stroke is simplified and stored in one change. Chips at the top show who is on the board.
+- **Images from the clipboard**: Ctrl+V (⌘V) on the board, or with nothing else focused, pastes a copied image or screenshot; a paste into a text field stays there. The **Add an image** button has **Paste image** (the Clipboard API, which asks once for permission on Android) and **Choose image**, and an image can be dropped on the board. It lands in the middle of the view (a drop, where it was dropped), a screenshot at the size it had on screen, at most 60 % of the view, and is selected, ready to move or resize.
+  - Images are stored in the board document, so they sync, merge and undo like strokes. Each is drawn again before it is stored, which drops a photo's metadata (its location among it) and applies its rotation, at most 2560 px on its long side, and encoded to 1 MB or less: PNG when that fits (screenshots, drawings), else WebP (JPEG where the browser can't write WebP), made smaller until it fits. At most 40 images per board.
+  - An image from a member is decoded with `createImageBitmap` from its bytes alone, which reads raster formats only: nothing in it runs, and an SVG never renders.
+- **Export**: the board's options have **Send to Chat** (the Chat's send sheet opens with `<board name>.png`, Keep for the room as for any file; `ctx.handOff`, which the Chat now takes) and **Download PNG**: the whole drawing on white with a margin, two pixels per board unit (4096 px at most).
+- The board is white paper in both colour schemes, so images and ink look the same on every device.
+- `PROTOCOL_VERSION` stays **6**: a device without the whiteboard ignores ch `board`, and syncs the boards once it has one.
+- Differences from the plan:
+  - **Boards are not in the room Y.Doc** but in a Y.Doc of their own (`peerkit.board:<room ID>` in IndexedDB, ch `board`): images can make it megabytes, and a newcomer would wait for all of them before seeing the chat history, which arrives in one piece. `RoomDoc` now takes a database name, a channel and an awareness. The board document loads when the tab is shown or when a member starts syncing it. "Leave and forget" deletes it as well.
+  - The eraser removes whole strokes, not the part it passes over.
+  - Simplification keeps a point where the pressure changes as well as where the line bends, so a stylus stroke keeps its taper.
+  - Images, the pointers of the others and Select were not in the plan.
+- Tests: `node test/run.mjs whiteboard` (91 checks) runs the Whiteboard with real rooms on the fake network: three devices and a headless member, with a canvas that records what is drawn and images that carry their size in their first bytes. Drawing and the stroke in progress on the others, three at once, simplification, pressure, undo and redo of one's own strokes only, the highlighter, colours and sizes, the eraser and its undo, a pinch, a palm after a stylus, drawing offline and merging, a pasted screenshot, a paste into a text field, moving and resizing, Paste image with a large photo and with no image, Delete, a file that isn't an image, a drop, the board list, rename and delete, Send to Chat and the exported PNG, Download, forged items and awareness, and the unread mark. The app test opens the Whiteboard tab and makes a board; the desktop test has the new default and a layout saved before the Whiteboard. 396 checks in all.
+- Found while testing, not changed here: two devices that join at the same moment are never linked to each other (see **Backlog → Robustness of the room**). The test lets its devices join one at a time.
+- Checked in Node, not in a browser: the checklist below is still to do.
+
 **Checklist**
 - [ ] Three devices draw at once, and the strokes appear on all of them while being drawn.
 - [ ] Undo on one device removes only its own stroke.
 - [ ] Draw while offline, then reconnect: the strokes merge.
 - [ ] Pinch zoom on the phone doesn't draw.
 - [ ] The exported PNG matches the board.
+- [ ] A screenshot copied on the laptop and pasted with Ctrl+V shows on the phone, sharp enough to read when zoomed in.
+- [ ] On the phone, an image copied in Chrome goes onto the board with Add an image → Paste image.
 
 ### Slice 14 — Phone as controller
 
@@ -915,6 +941,7 @@ Ideas raised on 2026-09-23 and not yet scheduled into a slice. Size is a rough g
 - **Small room tools** (S each) — a poll, a shared timer, dice. Good practice for the tool API before the game slices.
 
 ### Robustness of the room
+- **Two newcomers at once** (S) — found on 2026-09-24 while testing the whiteboard: devices that join at the same moment are each welcomed before the other is a member, and nothing makes them dial each other later. The documents, the chat and the boards still reach them through the others, but voice, streams and files sent once don't pass between the two. A fix: a member that hears in `links` of a member it isn't linked to dials it (the lower peer ID, as for redials).
 - **Fallback anchor IDs** (M) — derive `anchor2` and `anchor3` from the code. Today a crashed anchor holds the room's address for about 100 s and newcomers wait; with fallbacks they get in at once.
 - **Self-hosted signaling** (S) — a `peerjs-server` guide beside `docs/turn-server.md`, on the VPS that already runs coturn. Removes the "public 0.peerjs.com is unreliable" risk.
 - **Offline, the rest of it** (S) — the service worker of 2026-09-23 already opens the app with no internet, but `vendor/editor.js` is cached only after the Editor tab has been opened once, and a device with no network has no signaling server to talk to. Pairs with a signaling server on the same LAN.

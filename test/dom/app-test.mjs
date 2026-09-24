@@ -130,7 +130,7 @@ const { Room } = await import(`${ROOT}/app/room.js`);
 const { newRoomCode } = await import(`${ROOT}/app/rooms.js`);
 const { PUBLIC_PROFILE } = await import(`${ROOT}/app/settings.js`);
 const { CH } = await import(`${ROOT}/app/protocol.js`);
-const { RoomDoc } = await import(`${ROOT}/app/roomdoc.js`);
+const { RoomDoc, boardDocName } = await import(`${ROOT}/app/roomdoc.js`);
 const { Timeline } = await import(`${ROOT}/app/tools/chat/timeline.js`);
 /** The chat of a headless member: its room document, under a storage name of its own. */
 async function chatOf(member) {
@@ -199,7 +199,7 @@ if (MODE === 'start') {
 	const layout = () => [...groups()].map(group => group.tools.join('+')).sort().join(' | ');
 	await until('the room opens with the tools as panels and no bottom tabs', () => $('#tool-host.docked .dock') && $('#tabs').hidden && groups().length === 2, 8000);
 	await until('with the member linked', () => $('.member-chip:nth-child(2)')?.textContent === 'Phone');
-	check('the default layout: Stream and Editor in the main area, the Chat at the side', layout() === 'Chat | Stream+Editor', layout());
+	check('the default layout: Stream, Editor and Whiteboard in the main area, the Chat at the side', layout() === 'Chat | Stream+Editor+Whiteboard', layout());
 	check('the Editor is in front in the main area', groupWith('Editor').front === 'Editor');
 	// The member here runs no editor, so it never answers the sync: past "Loading" is what shows it loaded.
 	await until('and loads by itself, since it can be seen', () => /Syncing with the room|Write together/.test($('.editor-message:not([hidden])')?.textContent), 10000);
@@ -238,17 +238,35 @@ if (MODE === 'start') {
 
 	// Reset layout: the default again.
 	$('#reset-layout').click();
-	await until('Reset layout brings back the default', () => layout() === 'Chat | Stream+Editor' && Boolean(groupWith('Chat').button('Float')) && groupWith('Editor').front === 'Editor');
+	await until('Reset layout brings back the default', () => layout() === 'Chat | Stream+Editor+Whiteboard' && Boolean(groupWith('Chat').button('Float')) && groupWith('Editor').front === 'Editor');
 	await until('and saves it', () => {
 		const saved = JSON.parse(localStorage.getItem('peerkit.layout'))?.layout;
-		return saved && !saved.floatingGroups?.length && Object.keys(saved.panels).length === 3;
+		return saved && !saved.floatingGroups?.length && Object.keys(saved.panels).length === 4;
 	}, 2000);
+
+	// A layout saved before the Whiteboard existed: kept as it was, with the new tool added next to the Editor.
+	groupWith('Chat').button('Float').click();
+	await until('(a layout with the chat floating is saved)', () => JSON.parse(localStorage.getItem('peerkit.layout') ?? 'null')?.layout?.floatingGroups?.length === 1, 2000);
+	setWide(false);
+	const older = JSON.parse(localStorage.getItem('peerkit.layout'));
+	delete older.layout.panels.whiteboard;
+	const strip = node => {
+		if (node.type !== 'leaf') return node.data.forEach(strip);
+		node.data.views = node.data.views.filter(view => view !== 'whiteboard');
+		if (node.data.activeView === 'whiteboard') node.data.activeView = node.data.views[0];
+	};
+	strip(older.layout.grid.root);
+	localStorage.setItem('peerkit.layout', JSON.stringify(older));
+	setWide(true);
+	await until('a layout saved before the Whiteboard keeps its arrangement', () => groups().length === 2 && Boolean(groupWith('Chat')?.button('Put back')));
+	check('and gets the Whiteboard as a tab next to the Editor, behind the tool in front', groupWith('Whiteboard')?.el === groupWith('Editor').el && groupWith('Editor').front !== 'Whiteboard', layout());
+	await until('and saves it with the Whiteboard in it', () => Object.keys(JSON.parse(localStorage.getItem('peerkit.layout'))?.layout?.panels ?? {}).length === 4, 2000);
 
 	// A saved layout that doesn't fit (another app version, or edited by hand) is ignored.
 	setWide(false);
 	localStorage.setItem('peerkit.layout', JSON.stringify({ version: 1, layout: { panels: { transfer: {}, whiteboard: {} } } }));
 	setWide(true);
-	await until('a saved layout for other tools falls back to the default', () => layout() === 'Chat | Stream+Editor');
+	await until('a saved layout for other tools falls back to the default', () => layout() === 'Chat | Stream+Editor+Whiteboard' && Boolean(groupWith('Chat')?.button('Float')));
 	phone.send(CH.STREAM, { type: 'stop', id: 'cam1' });
 	await phone.leave();
 } else {
@@ -363,6 +381,16 @@ if (MODE === 'start') {
 	const [entry] = [...phoneDoc.getMap('docs').values()];
 	entry.get('text').insert(0, 'typed on the phone');
 	await until('typing on the member shows here', () => $('.cm-content')?.textContent.includes('typed on the phone'));
+
+	// Whiteboard: a tab of its own, and its boards reach the member's board document.
+	const phoneBoards = new RoomDoc(phone, 'b'.repeat(32), { name: boardDocName('b'.repeat(32)), channel: CH.BOARD, awareness: true });
+	await phoneBoards.load();
+	buttonByText($('#tabs'), 'Whiteboard').click();
+	await until('the whiteboard loads', () => $('.whiteboard .editor-message:not([hidden])')?.textContent.includes('Sketch together'), 8000);
+	buttonByText($('.whiteboard'), 'New board').click();
+	await until('a new board reaches the member', () => [...phoneBoards.doc.getMap('boards').values()].some(board => board.get('name') === 'Board 1'));
+	check('and the board is shown, with its tools', visible($('.wb-stage')) && visible($('.wb-tools')));
+	phoneBoards.destroy();
 
 	// The member leaves: this device is alone and takes over the anchor.
 	await phone.leave();

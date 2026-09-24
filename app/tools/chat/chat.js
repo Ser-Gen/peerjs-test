@@ -146,6 +146,8 @@ class ChatTool {
 		];
 		// Android's "Share → PeerKit": the files and text another app handed over, once the room is open.
 		if (ctx.onShare) this.unsubscribe.push(ctx.onShare(share => this.onShared(share)));
+		// A file another tool hands over, such as a board from the Whiteboard: the send sheet, as for any file.
+		if (ctx.onHandOff) this.unsubscribe.push(ctx.onHandOff(file => this.confirmSend([file])));
 		this.render();
 		this.load();
 	}
