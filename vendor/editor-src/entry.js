@@ -1,13 +1,9 @@
 // Everything PeerKit's shared editor uses, as one ES module: vendor/editor.js.
-// One bundle keeps a single copy of yjs and @codemirror/state, which both require.
+// One bundle keeps a single copy of @codemirror/state, which breaks with two. Yjs, which breaks the same way,
+// is not in it: it comes from vendor/yjs.js (yjs-entry.js), which the chat loads on its own.
 
-// CRDT and sync
-export * as Y from 'yjs';
-export * as syncProtocol from 'y-protocols/sync';
-export * as awarenessProtocol from 'y-protocols/awareness';
-export * as encoding from 'lib0/encoding';
-export * as decoding from 'lib0/decoding';
-export { IndexeddbPersistence } from 'y-indexeddb';
+// CRDT and sync, from vendor/yjs.js next to this bundle (build.mjs leaves './yjs.js' and 'yjs' as imports)
+export { Y, syncProtocol, awarenessProtocol, encoding, decoding, IndexeddbPersistence } from './yjs.js';
 export { yCollab, yUndoManagerKeymap } from 'y-codemirror.next';
 
 // CodeMirror

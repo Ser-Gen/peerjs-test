@@ -1,5 +1,5 @@
-import { Emitter } from '../../emitter.js';
-import { CH } from '../../protocol.js';
+import { Emitter } from './emitter.js';
+import { CH } from './protocol.js';
 
 const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
@@ -9,7 +9,8 @@ const HIGH_WATER = 256 * 1024; // don't pile more than this on a control connect
 const PACE_MS = 50;
 
 /*
- * Protocol (ch: 'doc'). y-protocols messages as in y-websocket: [varUint 0 = sync | 1 = awareness][payload].
+ * Protocol (ch: 'doc' for the editor's documents, 'room' for the room's chat). y-protocols messages as in
+ * y-websocket: [varUint 0 = sync | 1 = awareness][payload].
  *   msg  {data}                   one message, base64url
  *   part {id, part, parts, data}  a long message in base64url slices, sent in order
  * On every link up both sides send sync step 1 and their awareness, so only missing changes cross and
@@ -32,16 +33,17 @@ class LinkState {
 }
 
 /**
- * Keeps one Y.Doc and its Awareness in sync with every member of the room.
- * `lib` is the vendor/editor.js module. Events: 'synced' after the first sync step 2 from anyone.
+ * Keeps one Y.Doc, and its Awareness if it has one, in sync with every member of the room over one channel.
+ * `lib` is vendor/yjs.js (or vendor/editor.js, which passes it on). Events: 'synced' after the first sync step 2 from anyone.
  */
 export class DocProvider extends Emitter {
-	constructor({ lib, room, doc, awareness }) {
+	constructor({ lib, room, doc, awareness = null, channel = CH.DOC }) {
 		super();
 		this.lib = lib;
 		this.room = room;
 		this.doc = doc;
 		this.awareness = awareness;
+		this.channel = channel;
 		this.synced = false;
 		this.links = new Map(); // peerId → LinkState
 		this.heardVia = new Map(); // awareness client ID → Set of peer IDs it came through
@@ -66,9 +68,9 @@ export class DocProvider extends Emitter {
 			if (changed.includes(doc.clientID)) this.sendAwareness([doc.clientID]);
 		};
 		doc.on('update', this.onUpdate);
-		awareness.on('update', this.onAwareness);
+		awareness?.on('update', this.onAwareness);
 		this.unsubscribe = [
-			room.on(`msg:${CH.DOC}`, (msg, member) => this.receive(msg, member)),
+			room.on(`msg:${channel}`, (msg, member) => this.receive(msg, member)),
 			room.on('link-up', member => this.linkUp(member)),
 			room.on('link-down', member => this.linkDown(member)),
 			room.on('links', member => this.onLinksChanged(member)),
@@ -79,10 +81,10 @@ export class DocProvider extends Emitter {
 	destroy() {
 		// Tell the others our cursor is gone before letting go.
 		this.destroying = true;
-		this.lib.awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], 'destroy');
+		if (this.awareness) this.lib.awarenessProtocol.removeAwarenessStates(this.awareness, [this.doc.clientID], 'destroy');
 		this.unsubscribe.forEach(fn => fn());
 		this.doc.off('update', this.onUpdate);
-		this.awareness.off('update', this.onAwareness);
+		this.awareness?.off('update', this.onAwareness);
 		for (const member of [...this.links.keys()]) this.linkDown({ peerId: member });
 	}
 
@@ -92,7 +94,7 @@ export class DocProvider extends Emitter {
 		this.links.set(member.peerId, link);
 		this.enqueue(link, this.encodeSync(encoder => this.lib.syncProtocol.writeSyncStep1(encoder, this.doc)));
 		// Everyone we know about, so it also learns of members it isn't linked to.
-		const clients = [...this.awareness.getStates().keys()];
+		const clients = this.awareness ? [...this.awareness.getStates().keys()] : [];
 		if (clients.length) this.enqueue(link, this.encodeAwareness(clients));
 		return link;
 	}
@@ -125,7 +127,7 @@ export class DocProvider extends Emitter {
 	/** A member lost or gained direct links: it may now need what we forward, cursors included. */
 	onLinksChanged(member) {
 		const link = this.links.get(member.peerId);
-		const clients = [...this.awareness.getStates().keys()];
+		const clients = this.awareness ? [...this.awareness.getStates().keys()] : [];
 		if (link && clients.length) this.enqueue(link, this.encodeAwareness(clients));
 	}
 
@@ -188,7 +190,7 @@ export class DocProvider extends Emitter {
 				link.flushTimer = setTimeout(() => this.flush(link), PACE_MS);
 				return;
 			}
-			if (!this.room.send(CH.DOC, link.queue.shift(), link.peerId)) {
+			if (!this.room.send(this.channel, link.queue.shift(), link.peerId)) {
 				// The link is going down; the next link up starts over with step 1.
 				link.queue = [];
 				return;
@@ -239,7 +241,7 @@ export class DocProvider extends Emitter {
 						this.emit('synced');
 					}
 				}
-			} else if (kind === MSG_AWARENESS) {
+			} else if (kind === MSG_AWARENESS && this.awareness) {
 				awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(decoder), link);
 			}
 		} catch (err) {

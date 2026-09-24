@@ -130,6 +130,14 @@ const { Room } = await import(`${ROOT}/app/room.js`);
 const { newRoomCode } = await import(`${ROOT}/app/rooms.js`);
 const { PUBLIC_PROFILE } = await import(`${ROOT}/app/settings.js`);
 const { CH } = await import(`${ROOT}/app/protocol.js`);
+const { RoomDoc } = await import(`${ROOT}/app/roomdoc.js`);
+const { Timeline } = await import(`${ROOT}/app/tools/chat/timeline.js`);
+/** The chat of a headless member: its room document, under a storage name of its own. */
+async function chatOf(member) {
+	const data = new RoomDoc(member, 'b'.repeat(32));
+	await data.load();
+	return new Timeline(data, member.self);
+}
 
 if (MODE === 'start') {
 	localStorage.setItem('peerkit.recent', JSON.stringify({ version: 1, hosts: [] }));
@@ -174,8 +182,8 @@ if (MODE === 'start') {
 	// A wide window with a mouse: the tools are dockview panels instead of bottom tabs.
 	const code = newRoomCode();
 	const phone = new Room({ code, ice: { forRoom: null, adopt: () => false }, identity: { id: 'bbbbbbbbbbbbbbbb', name: 'Phone' } });
-	phone.claimFirst = true;
 	phone.start();
+	const phoneChat = await chatOf(phone);
 	await sleep(100);
 	localStorage.setItem('peerkit.room', JSON.stringify({ version: 1, current: code, rooms: [{ code, profile: PUBLIC_PROFILE, names: [], lastSeen: 0, known: true }] }));
 	await import(`${ROOT}/app/main.js`);
@@ -191,7 +199,7 @@ if (MODE === 'start') {
 	const layout = () => [...groups()].map(group => group.tools.join('+')).sort().join(' | ');
 	await until('the room opens with the tools as panels and no bottom tabs', () => $('#tool-host.docked .dock') && $('#tabs').hidden && groups().length === 2, 8000);
 	await until('with the member linked', () => $('.member-chip:nth-child(2)')?.textContent === 'Phone');
-	check('the default layout: Stream and Editor in the main area, Transfer at the side', layout() === 'Stream+Editor | Transfer', layout());
+	check('the default layout: Stream and Editor in the main area, the Chat at the side', layout() === 'Chat | Stream+Editor', layout());
 	check('the Editor is in front in the main area', groupWith('Editor').front === 'Editor');
 	// The member here runs no editor, so it never answers the sync: past "Loading" is what shows it loaded.
 	await until('and loads by itself, since it can be seen', () => /Syncing with the room|Write together/.test($('.editor-message:not([hidden])')?.textContent), 10000);
@@ -203,34 +211,34 @@ if (MODE === 'start') {
 	// Maximize the main area: the chat at the side can't be seen, so a message there marks its tab.
 	groupWith('Editor').button('Maximize').click();
 	check('Maximize turns into Restore', Boolean(groupWith('Editor').button('Restore')));
-	phone.send(CH.TRANSFER, { type: 'text', id: 1, part: 0, parts: 1, text: 'hi from the phone' });
-	await until('a message for a tool out of sight marks its tab', () => tabOf('Transfer')?.classList.contains('notify'));
+	phoneChat.addText('hi from the phone');
+	await until('a message for a tool out of sight marks its tab', () => tabOf('Chat')?.classList.contains('notify'));
 	groupWith('Editor').button('Restore').click();
-	await until('and the mark goes when it can be seen again', () => !tabOf('Transfer').classList.contains('notify'));
+	await until('and the mark goes when it can be seen again', () => !tabOf('Chat').classList.contains('notify'));
 
 	// A stream that starts brings its panel to the front.
 	phone.send(CH.STREAM, { type: 'start', id: 'cam1', kind: 'camera' });
 	await until('a stream from a member brings the Stream panel to the front', () => groupWith('Stream').front === 'Stream');
 
 	// Float the chat, then narrow the window: the bottom tabs come back with the same tools, not new ones.
-	groupWith('Transfer').button('Float').click();
-	check('Float takes the chat out of the grid', Boolean(groupWith('Transfer').button('Put back')) && !groupWith('Transfer').button('Maximize'));
+	groupWith('Chat').button('Float').click();
+	check('Float takes the chat out of the grid', Boolean(groupWith('Chat').button('Put back')) && !groupWith('Chat').button('Maximize'));
 	await until('the layout is saved on this device', () => JSON.parse(localStorage.getItem('peerkit.layout') ?? 'null')?.layout?.floatingGroups?.length === 1, 2000);
 	setWide(false);
 	check('a narrow window gets the bottom tabs back', !$('#tabs').hidden && !$('.dock') && $('#reset-layout').hidden && !$('#tool-host').classList.contains('docked'));
 	check('with the same tool elements, not remounted ones', $('[data-tool="editor"]') === editorEl && ($('.cm-editor') ?? $('.editor')) === cm);
 	check('and one tool shown at a time', [...document.querySelectorAll('.tool')].filter(el => !el.hidden).length === 1);
-	buttonByText($('#tabs'), 'Transfer').click();
-	check('the tabs work as on a phone', visible($('[data-tool="transfer"] .composer')) && !visible($('[data-tool="editor"]')));
+	buttonByText($('#tabs'), 'Chat').click();
+	check('the tabs work as on a phone', visible($('[data-tool="chat"] .composer')) && !visible($('[data-tool="editor"]')));
 
 	// Wide again: the saved layout comes back, floating chat and all.
 	setWide(true);
-	await until('widening brings the panels back as they were', () => groups().length === 2 && Boolean(groupWith('Transfer')?.button('Put back')) && groupWith('Stream').front === 'Stream');
-	check('and the tool that was in front in the tabs is in front', groupWith('Transfer').front === 'Transfer');
+	await until('widening brings the panels back as they were', () => groups().length === 2 && Boolean(groupWith('Chat')?.button('Put back')) && groupWith('Stream').front === 'Stream');
+	check('and the tool that was in front in the tabs is in front', groupWith('Chat').front === 'Chat');
 
 	// Reset layout: the default again.
 	$('#reset-layout').click();
-	await until('Reset layout brings back the default', () => layout() === 'Stream+Editor | Transfer' && Boolean(groupWith('Transfer').button('Float')) && groupWith('Editor').front === 'Editor');
+	await until('Reset layout brings back the default', () => layout() === 'Chat | Stream+Editor' && Boolean(groupWith('Chat').button('Float')) && groupWith('Editor').front === 'Editor');
 	await until('and saves it', () => {
 		const saved = JSON.parse(localStorage.getItem('peerkit.layout'))?.layout;
 		return saved && !saved.floatingGroups?.length && Object.keys(saved.panels).length === 3;
@@ -240,7 +248,7 @@ if (MODE === 'start') {
 	setWide(false);
 	localStorage.setItem('peerkit.layout', JSON.stringify({ version: 1, layout: { panels: { transfer: {}, whiteboard: {} } } }));
 	setWide(true);
-	await until('a saved layout for other tools falls back to the default', () => layout() === 'Stream+Editor | Transfer');
+	await until('a saved layout for other tools falls back to the default', () => layout() === 'Chat | Stream+Editor');
 	phone.send(CH.STREAM, { type: 'stop', id: 'cam1' });
 	await phone.leave();
 } else {
@@ -254,8 +262,8 @@ if (MODE === 'start') {
 	const voiceCalls = [];
 	phone.on(`msg:${CH.VOICE}`, msg => voiceHeard.push(msg));
 	phone.on('call', call => voiceCalls.push(call));
-	phone.claimFirst = true;
 	phone.start();
+	const phoneChat = await chatOf(phone);
 	await sleep(100);
 	check('the headless member holds the room', phone.state === 'open' && phone.isAnchor);
 
@@ -271,8 +279,9 @@ if (MODE === 'start') {
 	check('the invite link and QR carry the code', dialog.querySelector('.link').value.endsWith(`#room=${code}`) && dialog.querySelector('.qr').dataset.qr.endsWith(`#room=${code}`));
 	buttonByText(dialog, 'Done').click();
 
-	// The share the worker kept before the app opened: the Transfer tool offers to send it to the room.
+	// The share the worker kept before the app opened: the Chat offers to send it to the room.
 	await until('the shared file is offered to the room', () => lastDialog()?.textContent.includes('holiday.jpg'));
+	check('with the switch to keep it for the room', lastDialog().textContent.includes('Keep for the room'));
 	check('the shared text went into the composer', $('.composer textarea').value === 'from the gallery');
 	buttonByText(lastDialog(), 'Send').click();
 	await until('sending it reaches the member', () => phone.inbox.some(([m]) => m.type === 'offer' && m.name === 'holiday.jpg'));
@@ -282,33 +291,37 @@ if (MODE === 'start') {
 	phone.send(CH.TRANSFER, { type: 'complete', id: shareOffer.id }, phone.members[0].peerId);
 	$('.composer textarea').value = '';
 
-	// Transfer: text both ways.
+	// Chat: text both ways, through the room document.
 	const app = phone.members[0];
-	phone.send(CH.TRANSFER, { type: 'text', id: 1, part: 0, parts: 1, text: 'hi from the phone https://example.com' });
+	phoneChat.addText('hi from the phone https://example.com');
 	await until('text from a member shows with its name', () => [...document.querySelectorAll('.msg.theirs')].some(m => m.querySelector('.sender')?.textContent === 'Phone' && m.textContent.includes('hi from the phone')));
 	$('.composer textarea').value = 'hello room';
 	$('.composer').requestSubmit();
-	await until('text typed here reaches the member', () => phone.inbox.some(([m]) => m.type === 'text' && m.text === 'hello room'));
+	await until('text typed here reaches the member', () => phoneChat.messages().some(m => m.text === 'hello room'));
 
-	// Transfer: a file from here to the member.
+	// Chat: a file from here to the member.
+	const cardOf = name => [...document.querySelectorAll('.msg[data-id]')].find(m => m.querySelector('.file-name')?.textContent === name);
 	const fileInput = $('.composer input[type=file]');
 	Object.defineProperty(fileInput, 'files', { value: [new File(['hello file'], 'note.txt', { type: 'text/plain' })], configurable: true });
 	fileInput.dispatchEvent(new window.Event('change'));
+	buttonByText(lastDialog(), 'Send').click();
 	await until('the member gets an offer', () => phone.inbox.some(([m]) => m.type === 'offer' && m.name === 'note.txt'));
 	const offer = phone.inbox.find(([m]) => m.type === 'offer' && m.name === 'note.txt')[0];
+	check('and the file is in the chat', phoneChat.messages().some(m => m.id === offer.file && m.file.name === 'note.txt'));
 	phone.send(CH.TRANSFER, { type: 'accept', id: offer.id }, app.peerId);
 	await until('the member receives the bytes', () => phone.inbox.some(([m, data]) => m === 'binary' && data.byteLength === 4 + 10));
 	phone.send(CH.TRANSFER, { type: 'complete', id: offer.id }, app.peerId);
-	await until('the card says delivered', () => $('.msg.mine[data-state="delivered"] .file-status')?.textContent.startsWith('Delivered'));
+	await until('the card says delivered', () => cardOf('note.txt')?.querySelector('.file-status').textContent.startsWith('Delivered'));
 
-	// Transfer: a file from the member.
-	phone.send(CH.TRANSFER, { type: 'offer', id: 7, name: 'photo.bin', size: 3, mime: '' }, app.peerId);
+	// Chat: a file from the member, sent once.
+	const sentOnce = phoneChat.addFile({ name: 'photo.bin', size: 3, type: '', keep: false });
+	phone.send(CH.TRANSFER, { type: 'offer', id: 7, file: sentOnce.id, name: 'photo.bin', size: 3, mime: '', keep: false, hash: null }, app.peerId);
 	await until('an incoming file is accepted', () => phone.inbox.some(([m]) => m.type === 'accept' && m.id === 7));
 	const frame = new Uint8Array(7);
 	new DataView(frame.buffer).setUint32(0, 7);
 	frame.set([1, 2, 3], 4);
 	await phone.sendBinary(app.peerId, frame.buffer);
-	await until('and received, with Download', () => $('.msg.theirs[data-state="received"]') && buttonByText(document, '') && $('.msg.theirs a[download="photo.bin"]'));
+	await until('and received, with Open and Download', () => cardOf('photo.bin')?.dataset.state === 'here' && buttonByText(cardOf('photo.bin'), 'Download') && buttonByText(cardOf('photo.bin'), 'Open'));
 
 	// Voice: its own row in the room bar, reachable from every tool.
 	const voiceBar = () => $('.voice-bar');
@@ -338,7 +351,7 @@ if (MODE === 'start') {
 
 	// Editor: loads, syncs with a headless provider on the phone.
 	const lib = await import(`${ROOT}/vendor/editor.js`);
-	const { DocProvider } = await import(`${ROOT}/app/tools/editor/provider.js`);
+	const { DocProvider } = await import(`${ROOT}/app/docsync.js`);
 	const phoneDoc = new lib.Y.Doc();
 	const phoneAwareness = new lib.awarenessProtocol.Awareness(phoneDoc);
 	phoneAwareness.setLocalState({ user: { name: 'Phone', color: '#0c8599' }, doc: null });
@@ -354,8 +367,8 @@ if (MODE === 'start') {
 	// The member leaves: this device is alone and takes over the anchor.
 	await phone.leave();
 	await until('the members bar says nobody else is here', () => $('.members-note')?.textContent.includes('Nobody else') && $('#status-text').textContent === 'Only you');
-	buttonByText($('#tabs'), 'Transfer').click();
-	check('the feed says the member left', [...document.querySelectorAll('.sys')].some(el => el.textContent.startsWith('Phone left')));
+	buttonByText($('#tabs'), 'Chat').click();
+	check('the chat says the member left', [...document.querySelectorAll('.sys')].some(el => el.textContent.startsWith('Phone left')));
 	await until('this device takes over the anchor', () => window.peerkit.isAnchor, 6000);
 
 	// Sharing with nobody in the room: the capture starts and waits for the first person to arrive.

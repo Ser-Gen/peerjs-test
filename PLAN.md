@@ -58,7 +58,7 @@ app/
   protocol.js           message envelope {ch, type, slot, ...} + version
   ui/                   qr, toast, sheet/dialog, status bar, styles.css
   tools/                one module per tool, same interface
-    transfer.js         text + files (Slice 9: room chat with kept files and the viewer)
+    chat/               (Slice 9, was transfer.js) the room chat: timeline, kept files, file transfers, the viewer
     stream.js           camera / screen
     editor/             shared editor: tool UI + Yjs provider over the session
     whiteboard/         (Slice 13) shared drawing
@@ -68,7 +68,9 @@ app/
   games/                (later) game modules consuming controller input
 vendor/peerjs.min.js    peerjs 1.5.5 UMD
 vendor/qrcode.js
-vendor/editor.js        CodeMirror 6 + Yjs bundle, built once from pinned npm versions (recipe in vendor/README.md)
+vendor/yjs.js           Yjs bundle for the room document and the editor, built once from pinned npm versions (recipe in vendor/README.md)
+vendor/editor.js        CodeMirror 6 bundle, built the same way; it imports yjs.js
+vendor/pdf.js, pdf.worker.js  (Slice 9) pdf.js for the viewer on Android, Apache-2.0
 vendor/dockview.js, .css (Slice 10) dockview-core, MIT
 vendor/words.js         (Slice 7) the 2048-word list for room codes, with its licence
 vendor/fceux/           FCEUX Emscripten build (js + wasm), GPL-2.0, with a source link
@@ -569,6 +571,31 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - WebCrypto can't hash a stream, and multi-GB files don't fit in memory. Hash fixed-size parts (e.g. 4 MB) as they are read and name the file by the hash of the part hashes. A download can then check each part as it arrives.
 - OPFS quota: check `navigator.storage.estimate()` before keeping, and request `navigator.storage.persist()` so the browser doesn't evict kept files.
 - When several members fetch from one phone, serve them one at a time.
+
+**As built** (2026-09-24, app 0.10.1, `PROTOCOL_VERSION` 6 — after Slice 10)
+- Transfer is now **Chat** (`app/tools/chat/`, tool id `chat`). A desktop layout saved with the old Transfer panel no longer matches the tools, so it falls back to the default once, with the Chat at the side.
+- **Timeline** (`timeline.js`) in the room's own Y.Doc (`app/roomdoc.js`, IndexedDB `peerkit.room:<room ID>`), synced over a new channel `room` by the editor's provider, which moved to `app/docsync.js` and takes a channel. An array `chat` of messages (`{id, kind, from, name, time}` plus `text` or `file: {name, size, type, keep, hash}`), a map `held` (who keeps a copy of which file) and a map `removed`. Everything read from it is checked. Over 5 000 messages every device deletes the same oldest ones, and lets their files go.
+- The document needs Yjs but not CodeMirror, so the editor bundle was split: `vendor/yjs.js` (0.1 MB) loads when the room opens and is in the service worker's install list, and `vendor/editor.js` (0.7 MB, as before) imports it instead of carrying its own copy.
+- A newcomer gets the history with the normal sync. The page shows the newest 200 messages, with **Show earlier messages** above them. Links, the copy button, the unread dot and the "joined" / "left" lines are as before; those lines stay on this page only.
+- **Files**: every file goes through one send sheet (the clip button, paste, drop, Android's share), which has the **Keep for the room** switch (remembered in `peerkit.chat`, on by default) and says who gets it.
+  - **Send once**: to the members online, held in memory for this page. Everyone else's card says "Not kept".
+  - **Keep for the room**: the sender reads the file once to store its own copy and compute its hash, then puts it in the chat; every receiver writes it to disk (OPFS, `peerkit-kept/<room ID>/<file id>`) and keeps it only if it matches. The hash is SHA-256 over the SHA-256 of each 4 MB part, computed as the bytes arrive.
+  - A newcomer or a member who was away taps **Open** or **Download**: the file comes from a member online who keeps it (`want`, then `queued` or `none`, then the usual offer), and is kept here too. Each member answers requests one at a time. With nobody online: "Not available right now — *name* has it".
+  - **Remove from room**: a bin icon on each file card, after a confirmation. Every device deletes its copy; the card says "Removed by *name*".
+  - **Settings → Kept files**: the space for kept files on this device (500 MB to 20 GB, default 2 GB) and what they take now. The oldest kept files, of any room, are dropped first; the card says "Dropped from this device to free space" and offers the file again from whoever has it.
+- **Viewer** (`viewer.js`), full screen, with Download and Share: images, video and audio when the browser can play them (`canPlayType`), PDF in the browser's own viewer where `navigator.pdfViewerEnabled`, else pdf.js, and text and code in a read-only CodeMirror with syntax colours and **Open as shared document** (the Editor gets it through a new `ctx.handOff`). Anything else: Download and Share. Received HTML shows as source and SVG only as an image. Every object URL gets a type chosen from the file name, never the sender's, and downloads are `application/octet-stream`, so nothing a member sends can open as a page of this site.
+- pdf.js is `pdfjs-dist` 6.3.289, its **legacy** build: the modern one needs JavaScript that only the newest browsers have (`Uint8Array.prototype.toHex`). It draws pages onto canvases as they scroll into view. Its CJK font maps, standard fonts and JPEG 2000 decoder (4 MB more) are left out; see `vendor/README.md`.
+- An offer must match its chat entry, and a device refuses an offer for a file it already has or is already receiving, so a bad copy can't overwrite a good one.
+- `PROTOCOL_VERSION` → **6**: text no longer goes as `transfer` messages, so a version-5 device would neither see the chat nor be seen in it.
+- Differences from the plan:
+  - A kept file is stored under its chat entry id, not under its hash, so the sender can store and hash its copy in one read. The hash is in the entry, so every copy is checked all the same, whoever it comes from.
+  - A download is checked once, at the end, against the hash, not part by part as it arrives: that needs no list of part hashes sent ahead. A bad copy is found only when it is complete, and nothing of it is kept.
+  - The Keep switch is in the send sheet, not in the composer.
+  - Messages can be sent with nobody else in the room: they wait in the history. So can kept files.
+  - A message longer than 50 000 characters is refused, with a hint to send it as a file or open it in the Editor.
+  - "Open" on a kept file that isn't here fetches it and then opens it.
+- Tests: `node test/run.mjs chat` (62 checks) runs the Chat with real rooms on the fake network, five devices and a headless member: history, a photo sent once, kept files on every device, a newcomer fetching one after its sender left (byte for byte), the viewer for an image, a video, code, HTML and a PDF, a forged copy that fails its hash, a long history, removing a file, the storage limit, trimming. `node test/run.mjs vendor` (5 checks) checks that the two bundles share one Yjs and that pdf.js opens a PDF. The app test's chat now runs through a room document on the headless member. 298 checks in all.
+- Checked in Node, not in a browser: the checklist below is still to do.
 
 **Checklist**
 - [ ] A message sent before a device joined is in its history after it joins.

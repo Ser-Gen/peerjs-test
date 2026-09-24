@@ -67,7 +67,7 @@ export async function takeShare() {
 		const response = await cache.match(key(file.key)).catch(() => null);
 		if (!response) continue;
 		const blob = await response.blob();
-		// A name makes it enough of a File for the Transfer tool, and the bytes stay in the blob store
+		// A name makes it enough of a File for the Chat, and the bytes stay in the blob store
 		// instead of being copied into a new File.
 		try {
 			Object.defineProperty(blob, 'name', { value: file.name });

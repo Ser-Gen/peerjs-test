@@ -1,6 +1,6 @@
 // Runs the Node tests. Usage:
 //   node test/run.mjs                 every test once
-//   node test/run.mjs room            one test by name (room | editor-sync | voice | pwa | app | start | desktop | editor)
+//   node test/run.mjs room            one test by name (room | editor-sync | voice | pwa | vendor | app | start | desktop | editor | chat)
 //   node test/run.mjs room --times 20 repeat it, which is how the random anchor handover is checked
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -14,10 +14,12 @@ const TESTS = [
 	{ name: 'editor-sync', file: 'editor-sync-test.mjs', args: [], about: 'Yjs sync and forwarding between 3–4 members' },
 	{ name: 'voice', file: 'voice-test.mjs', args: [], about: 'room voice: who dials, listeners, mute, links that drop' },
 	{ name: 'pwa', file: 'pwa-test.mjs', args: [], about: 'the manifest, the service worker and the Android share' },
+	{ name: 'vendor', file: 'vendor-test.mjs', args: [], about: 'the vendored bundles: one Yjs, and pdf.js reading a PDF' },
 	{ name: 'app', file: 'dom/app-test.mjs', args: ['room'], jsdom: true, about: 'the whole app in a room, in jsdom' },
 	{ name: 'start', file: 'dom/app-test.mjs', args: ['start'], jsdom: true, about: 'the start screen: codes, links, recent rooms' },
 	{ name: 'desktop', file: 'dom/app-test.mjs', args: ['desktop'], jsdom: true, about: 'the desktop layout: panels, float, maximize, back to tabs' },
 	{ name: 'editor', file: 'dom/editor-test.mjs', args: [], jsdom: true, about: 'the Editor tool with two members, in jsdom' },
+	{ name: 'chat', file: 'dom/chat-test.mjs', args: [], jsdom: true, about: 'the Chat: history, kept files, the viewer, the storage limit' },
 ];
 
 const argv = process.argv.slice(2);

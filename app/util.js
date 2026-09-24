@@ -29,6 +29,29 @@ export function writeJSON(key, value) {
 	}
 }
 
+let idbCheck = null;
+
+/**
+ * IndexedDB can be missing or refuse to open (private windows, blocked site data). y-indexeddb then never
+ * resolves `whenSynced` and leaves the rejection unhandled, so try a separate small database first.
+ */
+export function indexedDBUsable(wait = 4000) {
+	idbCheck ??= new Promise(resolve => {
+		setTimeout(() => resolve(false), wait); // blocked IndexedDB never answers
+		try {
+			const request = indexedDB.open('peerkit.check');
+			request.onsuccess = () => {
+				request.result.close();
+				resolve(true);
+			};
+			request.onerror = () => resolve(false);
+		} catch {
+			resolve(false);
+		}
+	});
+	return idbCheck;
+}
+
 /** A readable name until the user sets one: "Android phone", "Chrome on Mac"… */
 export function defaultDeviceName() {
 	const ua = navigator.userAgent;

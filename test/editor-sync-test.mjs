@@ -1,8 +1,8 @@
-// app/tools/editor/provider.js in rooms: several members, links that come and go, forwarding for unlinked pairs.
+// app/docsync.js (the editor's documents) in rooms: several members, links that come and go, forwarding for unlinked pairs.
 globalThis.window = globalThis;
 const ROOT = new URL('../', import.meta.url).pathname.replace(/\/$/, ''); // the repo root
 const lib = await import(`${ROOT}/vendor/editor.js`);
-const { DocProvider } = await import(`${ROOT}/app/tools/editor/provider.js`);
+const { DocProvider } = await import(`${ROOT}/app/docsync.js`);
 const { Emitter } = await import(`${ROOT}/app/emitter.js`);
 
 const MTU = 16300;

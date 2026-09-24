@@ -1,22 +1,43 @@
-// Builds ../editor.js (vendor/editor.js). Run `npm ci`, then `npm run build`.
+// Builds ../yjs.js and ../editor.js (vendor/). Run `npm ci`, then `npm run build`.
 import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 
-// Name, version and licence of every package that ends up in the bundle, from the lock file.
 const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
-const bundled = Object.entries(lock.packages)
-	.filter(([path, pkg]) => path.startsWith('node_modules/') && !pkg.dev)
-	.map(([path, pkg]) => `${path.slice('node_modules/'.length)}@${pkg.version} (${pkg.license ?? 'see package'})`)
-	.sort();
 
-await build({
-	entryPoints: ['entry.js'],
-	outfile: '../editor.js',
-	bundle: true,
-	format: 'esm',
-	minify: true,
-	target: 'es2020',
-	legalComments: 'eof',
-	banner: { js: `/*\n * PeerKit shared editor bundle, built from vendor/editor-src (see vendor/README.md). Contains:\n * ${bundled.join('\n * ')}\n */` },
-});
-console.log(`built ../editor.js from ${bundled.length} packages`);
+// The editor bundle gets Yjs from vendor/yjs.js next to it, never a copy of its own.
+const yjsOutside = {
+	name: 'yjs-outside',
+	setup(b) {
+		b.onResolve({ filter: /^(yjs|\.\/yjs\.js)$/ }, () => ({ path: './yjs.js', external: true }));
+	},
+};
+
+/** Name, version and licence of every package that ended up in a bundle. */
+function contents(metafile) {
+	const names = new Set();
+	for (const input of Object.keys(metafile.inputs)) {
+		const match = /node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(input);
+		if (match) names.add(match[1]);
+	}
+	return [...names].sort().map(name => {
+		const pkg = lock.packages[`node_modules/${name}`];
+		return `${name}@${pkg.version} (${pkg.license ?? 'see package'})`;
+	});
+}
+
+async function bundle({ entry, outfile, title, plugins = [] }) {
+	const options = { entryPoints: [entry], bundle: true, format: 'esm', target: 'es2020', plugins, logLevel: 'error' };
+	const { metafile } = await build({ ...options, write: false, metafile: true });
+	const list = contents(metafile);
+	await build({
+		...options,
+		outfile,
+		minify: true,
+		legalComments: 'eof',
+		banner: { js: `/*\n * ${title}, built from vendor/editor-src (see vendor/README.md). Contains:\n * ${list.join('\n * ')}\n */` },
+	});
+	console.log(`built ${outfile} from ${list.length} packages`);
+}
+
+await bundle({ entry: 'yjs-entry.js', outfile: '../yjs.js', title: 'PeerKit shared data bundle (Yjs)' });
+await bundle({ entry: 'entry.js', outfile: '../editor.js', title: 'PeerKit shared editor bundle; Yjs comes from ./yjs.js', plugins: [yjsOutside] });

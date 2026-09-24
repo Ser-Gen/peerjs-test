@@ -11,11 +11,13 @@ import { renderQR } from './ui/qr.js';
 import { SettingsView } from './ui/settings-view.js';
 import { StartView } from './ui/start-view.js';
 import { claimTab, copyText } from './util.js';
+import { roomDocName } from './roomdoc.js';
+import chat from './tools/chat/chat.js';
+import { deleteRoomFiles } from './tools/chat/kept.js';
 import editor from './tools/editor/editor.js';
 import stream from './tools/stream.js';
-import transfer from './tools/transfer.js';
 
-const TOOLS = [transfer, stream, editor].filter(tool => tool.supported());
+const TOOLS = [chat, stream, editor].filter(tool => tool.supported());
 
 const INVITE_KEY = 'peerkit.invite'; // sessionStorage: the new room whose invite sheet opens once it is ready
 const SERVER_ERRORS = new Set(['network', 'server-error', 'socket-error', 'socket-closed', 'disconnected', 'invalid-key', 'ssl-unavailable']);
@@ -88,9 +90,10 @@ let claim = 0;
 let knownNames = '';
 let inviteDialog = null;
 let activeBeforeSettings = null;
-let sharePending = null; // what "Share → PeerKit" handed over, waiting for the Transfer tool
+let sharePending = null; // what "Share → PeerKit" handed over, waiting for the Chat
 let shareWaiting = null; // the same share, described, while there is no room to send it to
 const shareListeners = new Set();
+const handOffs = new Map(); // tool id → what it does with a file another tool hands it
 
 const settingsView = new SettingsView(els.settings, { onClose: closeSettings, sessionProfile: () => profile, ice });
 if (!room && !bootError) {
@@ -521,7 +524,7 @@ function showLeave() {
 	const dialog = openDialog(h('div', { class: 'sheet-body' },
 		h('h2', {}, 'Leave this room?'),
 		h('p', { class: 'hint' }, 'The others stay in the room. You can come back from Recent rooms or with the code.'),
-		h('p', { class: 'hint' }, '“Leave and forget” also deletes the room’s documents from this device; the others keep theirs.'),
+		h('p', { class: 'hint' }, '“Leave and forget” also deletes the room’s documents, chat and kept files from this device; the others keep theirs.'),
 		h('div', { class: 'actions end' },
 			button('Cancel', null, () => dialog.close(), 'btn ghost'),
 			button('Leave and forget', 'trash', () => leaveRoom(true), 'btn danger'),
@@ -554,23 +557,25 @@ function openRoom({ code, profile }) {
 }
 
 async function forgetRoom(saved) {
-	if (!confirm(`Forget the room ${saved.code}?\n\nIts documents are deleted from this device. The others in the room keep theirs.`)) return;
+	if (!confirm(`Forget the room ${saved.code}?\n\nIts documents, chat and kept files are deleted from this device. The others in the room keep theirs.`)) return;
 	roomStore.forget(saved.code);
 	await deleteRoomData(saved.code);
 	toast('Room forgotten');
 }
 
-/** Delete what this device keeps for a room (the editor's IndexedDB database). */
+/** Delete what this device keeps for a room: the editor's documents, the chat and the kept files. */
 function deleteRoomData(code) {
-	return new Promise(resolve => {
+	const { id } = roomIds(code);
+	const deleteDatabase = name => new Promise(resolve => {
 		setTimeout(resolve, 2000); // a blocked database never answers
 		try {
-			const request = indexedDB.deleteDatabase(`peerkit.doc:${roomIds(code).id}`);
+			const request = indexedDB.deleteDatabase(name);
 			request.onsuccess = request.onerror = request.onblocked = () => resolve();
 		} catch {
 			resolve();
 		}
 	});
+	return Promise.all([deleteDatabase(`peerkit.doc:${id}`), deleteDatabase(roomDocName(id)), deleteRoomFiles(id).catch(() => {})]);
 }
 
 /** Back to the start screen. A room that never opened here and wasn't known is dropped from the list. */
@@ -666,7 +671,7 @@ function mountTools() {
 		tabs: els.tabs,
 		tools: TOOLS,
 		// On a wide screen the chat stays at the side, next to whatever is open in the main area.
-		side: ['transfer'],
+		side: ['chat'],
 		front: 'editor',
 		onChange: render,
 	});
@@ -689,5 +694,18 @@ function mountTools() {
 		},
 		/** Called each time the tool comes into view (its tab or panel); returns an unsubscribe function. */
 		onShow: fn => layout.onShow(tool.id, fn),
+		/** Give a file to another tool and bring it to the front, e.g. the viewer's "Open as shared document". */
+		handOff: (to, file) => {
+			const fn = handOffs.get(to);
+			if (!fn) return false;
+			layout.activate(to);
+			fn(file);
+			return true;
+		},
+		/** What this tool does with a file another tool hands it; returns an unsubscribe function. */
+		onHandOff: fn => {
+			handOffs.set(tool.id, fn);
+			return () => handOffs.get(tool.id) === fn && handOffs.delete(tool.id);
+		},
 	});
 }

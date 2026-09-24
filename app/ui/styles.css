@@ -1053,9 +1053,9 @@ h2 {
 	}
 }
 
-/* --- transfer tool --- */
+/* --- chat --- */
 
-.transfer {
+.chat {
 	flex: 1;
 	min-height: 0;
 	display: flex;
@@ -1076,7 +1076,7 @@ h2 {
 	padding: 1rem max(0.75rem, env(safe-area-inset-left));
 }
 
-.transfer.dragging .feed {
+.chat.dragging .feed {
 	outline: 2px dashed var(--accent);
 	outline-offset: -8px;
 }
@@ -1089,6 +1089,14 @@ h2 {
 
 .feed-empty p {
 	margin: 0.25rem 0;
+}
+
+.feed-empty .spinner {
+	margin: 0 auto 0.5rem;
+}
+
+.feed-earlier {
+	align-self: center;
 }
 
 .sys {
@@ -1140,7 +1148,7 @@ h2 {
 	font-weight: 600;
 }
 
-/* The files an Android share handed over, listed in the confirmation sheet. */
+/* The files about to be sent, listed in the send sheet. */
 .share-list {
 	display: flex;
 	flex-direction: column;
@@ -1248,6 +1256,16 @@ h2 {
 	object-fit: contain;
 	border-radius: 10px;
 	background: var(--surface-2);
+	cursor: zoom-in;
+}
+
+/* Removed from the room: the entry stays, the file is gone everywhere. */
+.msg[data-state="removed"] .file-head {
+	opacity: 0.55;
+}
+
+.msg[data-state="removed"] .file-name {
+	text-decoration: line-through;
 }
 
 .file-foot {
@@ -1335,6 +1353,132 @@ progress::-moz-progress-bar {
 	font-size: 16px; /* below 16px mobile browsers zoom on focus */
 	line-height: 1.4;
 	resize: none;
+}
+
+/* --- file viewer: a received file full screen, opened from the chat --- */
+
+.sheet.viewer-sheet {
+	width: 100%;
+	max-width: 100%;
+	height: 100%;
+	max-height: 100%;
+	margin: 0;
+	border: 0;
+	border-radius: 0;
+}
+
+.viewer {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+}
+
+.viewer-head {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: calc(0.5rem + env(safe-area-inset-top)) max(0.75rem, env(safe-area-inset-right)) 0.5rem max(0.75rem, env(safe-area-inset-left));
+	border-bottom: 1px solid var(--border);
+}
+
+.viewer-title {
+	flex: 1;
+	min-width: 0;
+}
+
+.viewer-tools {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.4rem;
+}
+
+.viewer-body {
+	--editor-font-size: 14px;
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	overflow: auto;
+	background: var(--bg);
+}
+
+.viewer-body > img,
+.viewer-body > video {
+	max-width: 100%;
+	max-height: 100%;
+	object-fit: contain;
+}
+
+.viewer-body > audio {
+	width: min(100% - 2rem, 32rem);
+}
+
+.viewer-body > iframe {
+	width: 100%;
+	height: 100%;
+	border: 0;
+	background: #ffffff;
+}
+
+.viewer-body[data-kind="text"],
+.viewer-body[data-kind="pdf"] {
+	align-items: stretch;
+	justify-content: flex-start;
+}
+
+.viewer-code {
+	flex: 1;
+	min-width: 0;
+}
+
+.viewer-note {
+	margin: auto;
+	max-width: 22rem;
+	padding: 1rem;
+	text-align: center;
+}
+
+.viewer-note > .icon {
+	width: 2.5rem;
+	height: 2.5rem;
+	opacity: 0.6;
+}
+
+.viewer-note > .spinner {
+	margin: 0 auto 0.5rem;
+}
+
+/* pdf.js pages, where the browser has no PDF viewer of its own (Android). */
+.pdf-pages {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.75rem;
+	padding: 0.75rem;
+}
+
+.pdf-page {
+	width: min(100%, 60rem);
+	background: #ffffff;
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+}
+
+.pdf-page canvas {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+
+.pdf-count {
+	position: sticky;
+	bottom: 0.5rem;
+	align-self: center;
+	padding: 0.15rem 0.6rem;
+	border-radius: 999px;
+	background: var(--surface);
 }
 
 /* --- editor tool --- */

@@ -13,7 +13,8 @@ import { TLS_PORT, TURN_PORT, TurnError, canMint, normalizeTurn, testTurn, turnS
 import { APP_VERSION } from '../version.js';
 import { install } from '../pwa.js';
 import { PROTOCOL_VERSION } from '../protocol.js';
-import { copyText, defaultDeviceName } from '../util.js';
+import { LIMITS, canKeep, keptSettings, keptUsage } from '../tools/chat/kept.js';
+import { copyText, defaultDeviceName, formatBytes } from '../util.js';
 import { button, h, icon, openDialog, toast } from './dom.js';
 
 const TURN_TEST = 'turn'; // key in `tests`; profile ids are hex
@@ -78,6 +79,7 @@ export class SettingsView {
 		};
 		profiles.on('change', rerender);
 		turnSettings.on('change', rerender);
+		keptSettings.on('change', rerender);
 		install.on(rerender); // Chrome offers the install prompt some time after the page loads
 		ice?.on('change', rerender);
 	}
@@ -133,6 +135,8 @@ export class SettingsView {
 						}),
 						h('small', {}, 'Others in the room see this name.'))),
 
+				this.renderKept(),
+
 				h('section', { class: 'settings-section' },
 					h('h2', {}, 'Backup'),
 					h('p', { class: 'hint' }, 'Move your servers and TURN settings to another device.'),
@@ -148,6 +152,34 @@ export class SettingsView {
 					h('h2', {}, 'About'),
 					h('p', { class: 'version' }, `PeerKit ${APP_VERSION} · room protocol ${PROTOCOL_VERSION}`),
 					h('p', { class: 'hint' }, 'Devices in one room need the same protocol number, so reload every device after an update.'))));
+	}
+
+	/** Files sent with "Keep for the room" are stored on every device that gets them, up to a limit per device. */
+	renderKept() {
+		const section = h('section', { class: 'settings-section' },
+			h('h2', {}, 'Kept files'),
+			h('p', { class: 'hint' }, 'Files sent with “Keep for the room” are stored on every device that gets them, so people who join later can get them too.'));
+		if (!canKeep()) {
+			section.append(h('p', { class: 'hint' }, 'This browser can’t keep files here: it needs the https:// address.'));
+			return section;
+		}
+		const usage = h('small', {}, 'Checking what is kept…');
+		keptUsage()
+			.then(({ bytes, files }) => {
+				usage.textContent = files ? `${formatBytes(bytes)} kept now, in ${files} ${files === 1 ? 'file' : 'files'}.` : 'Nothing is kept on this device yet.';
+			})
+			.catch(() => {
+				usage.textContent = '';
+			});
+		section.append(h('label', { class: 'field' },
+			h('span', {}, 'Space on this device'),
+			h('select', {
+				class: 'input select',
+				onchange: e => keptSettings.setLimit(Number(e.target.value)).catch(err => console.warn('[peerkit] kept files', err)),
+			}, LIMITS.map(limit => h('option', { value: String(limit), selected: limit === keptSettings.limit }, formatBytes(limit)))),
+			h('small', {}, 'When it is full, the oldest kept files are dropped first. The chat still lists them, and they can be fetched again from someone who has them.'),
+			usage));
+		return section;
 	}
 
 	/** Installing makes PeerKit open like an app, and puts it in Android's share sheet (Share → PeerKit). */

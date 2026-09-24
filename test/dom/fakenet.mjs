@@ -41,7 +41,9 @@ class FakeConn extends Em {
 		if (!this.open) throw new Error('not open');
 		const other = this.other;
 		if (isSilent(this.owner) || isSilent(other.owner)) return;
-		const payload = this.serialization === 'json' ? JSON.parse(JSON.stringify(data)) : data;
+		// peerjs hands binary over as an ArrayBuffer of its own, whatever view was sent.
+		const payload = this.serialization === 'json' ? JSON.parse(JSON.stringify(data))
+			: ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
 		setTimeout(() => {
 			if (other.open && !other.closed && !isSilent(other.owner) && !isSilent(this.owner)) other.emit('data', payload);
 		}, 2);

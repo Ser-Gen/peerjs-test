@@ -6,16 +6,18 @@
  * It is a classic worker, not a module, because Firefox still has no module workers.
  * VERSION must match APP_VERSION in app/version.js and SHELL must list the app's files; test/pwa-test.mjs checks both.
  */
-const VERSION = '0.10.0';
+const VERSION = '0.10.1';
 const CACHE = `peerkit-${VERSION}`;
 const SHARE_CACHE = 'peerkit-share'; // read and emptied by app/share.js; the names below are shared with it
 const SHARE_INDEX = 'share-index';
 const SHARE_FILE = 'share-file-'; // + its position in the share
 const MAX_SHARE_BYTES = 2 * 1024 * 1024 * 1024; // one share; bigger than this is a job for the file picker
 
-// Everything the app needs to start. vendor/editor.js (0.7 MB) is left out: it is loaded when the Editor tab
-// is first opened and cached then, so an offline device that never opened the editor doesn't pay for it.
-// vendor/dockview.js and .css (0.5 MB) likewise: only a wide screen with a mouse loads them, never a phone.
+// Everything the app needs to start, the chat's vendor/yjs.js included. vendor/editor.js (0.7 MB) is left out: it
+// is loaded when the Editor tab is first opened (or a text file in the viewer) and cached then, so an offline device
+// that never opened the editor doesn't pay for it. vendor/dockview.js and .css (0.5 MB) likewise: only a wide screen
+// with a mouse loads them, never a phone. vendor/pdf.js and pdf.worker.js (1.7 MB): only a PDF opened on a browser
+// without a PDF viewer of its own (Android Chrome).
 const SHELL = [
 	'./',
 	'manifest.webmanifest',
@@ -28,10 +30,12 @@ const SHELL = [
 	'app/main.js',
 	'app/crypto.js',
 	'app/device.js',
+	'app/docsync.js',
 	'app/emitter.js',
 	'app/protocol.js',
 	'app/pwa.js',
 	'app/room.js',
+	'app/roomdoc.js',
 	'app/rooms.js',
 	'app/settings.js',
 	'app/share.js',
@@ -40,9 +44,13 @@ const SHELL = [
 	'app/voice.js',
 	'app/version.js',
 	'app/tools/stream.js',
-	'app/tools/transfer.js',
+	'app/tools/chat/chat.js',
+	'app/tools/chat/kept.js',
+	'app/tools/chat/timeline.js',
+	'app/tools/chat/transfers.js',
+	'app/tools/chat/viewer.js',
 	'app/tools/editor/editor.js',
-	'app/tools/editor/provider.js',
+	'app/ui/code.js',
 	'app/ui/dom.js',
 	'app/ui/layout.js',
 	'app/ui/qr.js',
@@ -52,6 +60,7 @@ const SHELL = [
 	'vendor/peerjs.min.js',
 	'vendor/qrcode.js',
 	'vendor/words.js',
+	'vendor/yjs.js',
 ];
 
 const scope = () => self.registration.scope;
@@ -106,7 +115,7 @@ async function networkFirst(request) {
 
 /**
  * "Share → PeerKit" from another Android app. The POST can't be answered by a page, so it is kept here and
- * the browser is sent to the app, which picks it up (app/share.js) and offers it to the Transfer tool.
+ * the browser is sent to the app, which picks it up (app/share.js) and offers it to the Chat.
  */
 async function receiveShare(request) {
 	try {

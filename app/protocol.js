@@ -1,13 +1,14 @@
 // Bump when messages change incompatibly; members with different versions refuse to link.
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 // Message channels on the control connection. Every message is `{ ch, type, ...payload }`.
 export const CH = {
 	SYS: 'sys', // links, room membership, ping / pong
-	TRANSFER: 'transfer', // text + file offers
+	TRANSFER: 'transfer', // file offers and requests for kept files (app/tools/chat/transfers.js)
 	STREAM: 'stream', // camera / screen start, stop, close (media itself goes over a peerjs call)
 	VOICE: 'voice', // who is in the room's voice conversation (app/voice.js)
-	DOC: 'doc', // shared editor: Yjs sync and awareness (app/tools/editor/provider.js)
+	DOC: 'doc', // shared editor: Yjs sync and awareness (app/docsync.js)
+	ROOM: 'room', // the room document: the chat and its file list, Yjs sync like DOC (app/roomdoc.js)
 };
 
 /*
@@ -39,6 +40,9 @@ export const CH = {
  *
  * Voice (ch: 'voice'):
  *   state {on, muted, mic}   the sender's voice state; sent on every link up and whenever it changes
+ *
+ * Version 6 moved the chat into the room document (ch: 'room'): a version-5 device sends text as
+ * `transfer` messages that a version-6 device no longer reads, so the two refuse to link.
  */
 
 // peerjs DataConnection labels.
