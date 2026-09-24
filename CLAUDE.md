@@ -80,7 +80,7 @@ The app has no build step. There are two package.json files, neither in the repo
   - Two links to one member: the dial from the lower peer ID wins unless the existing link is alive. The same device ID with a new peer ID (a reload) replaces the old link.
   - After a drop the lower peer ID dials again, up to 6 times. `bye` (Leave), `peer-unavailable` and rejections end it.
   - Tool messages that arrive between authed and up are held and delivered after `link-up`.
-  - Members send `links` (their direct links) so the editor can forward to members that aren't linked to each other.
+  - Members send `links` (their direct links) so the editor can forward to members that aren't linked to each other. They also fill gaps in the mesh: two newcomers welcomed at the same moment aren't on each other's list, so a member listed by others that this device isn't linked to is dialed once the lists have been still for 3 s (`_meet`), by the lower peer ID of the two. A peer ID that said `bye`, was rejected, or reloaded under a new ID (`gone`) isn't dialed that way.
 - **peerjs quirks:**
   - A peer whose first registration fails is destroyed; one that was registered before is only disconnected (`reconnect()` works on it).
   - `connect()` while disconnected returns `undefined`.

@@ -273,9 +273,8 @@ function paste(target, files) {
 
 const A = device('Laptop', 'a', { withChat: true });
 await sleep(60); // A holds the room before the others look for it
+// B and C join at the same moment: each is welcomed before the other is a member, and they find each other through A.
 const B = device('Phone', 'b');
-await until('(the phone is in)', () => A.room.members.length === 1 && B.room.members.length === 1, 8000);
-// One at a time: two devices that join at the same moment are each welcomed before the other is a member.
 const C = device('Tablet', 'c');
 await until('three devices share a room', () => [A, B, C].every(dev => dev.room.members.length === 2), 8000, () => [A, B, C].map(dev => `${dev.name}: ${dev.room.state} ${dev.room.members.map(m => m.name)}`).join('; '));
 

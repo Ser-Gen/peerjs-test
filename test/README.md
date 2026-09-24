@@ -10,7 +10,7 @@ node test/run.mjs room --times 20 # repeat it (the anchor handover uses random d
 
 | Test | What it covers |
 | --- | --- |
-| `room-test.mjs` | `app/room.js` with several devices on a fake peerjs network and a virtual clock: joining, the handshake, one link per pair, anchor handover, a silent anchor holder, a wrong code, a relay in the middle, a full room. |
+| `room-test.mjs` | `app/room.js` with several devices on a fake peerjs network and a virtual clock: joining, the handshake, one link per pair, anchor handover, a silent anchor holder, a wrong code, a relay in the middle, a full room, two newcomers at once finding each other through the members' `links`. |
 | `editor-sync-test.mjs` | `app/docsync.js` (the editor's documents) with 3–4 members: sync on link up, forwarding to members that are not linked to each other, cursors after a link drops, a 1 MB paste split into messages under the peerjs limit. |
 | `voice-test.mjs` | `app/voice.js` with a faked room and the media connections from `dom/fakenet.mjs`: who dials of two members in voice, a device without a microphone joining as a listener, mute both ways, per-member volume, a link that drops and a reload, calls that belong to another tool, the copy of a track the level meter reads (never the stream the `<audio>` element plays), a member marked as one we cannot hear yet (no call, no media through it), and the ways a pair without a call finds its way back. |
 | `vendor-test.mjs` | The vendored bundles fit together: `vendor/editor.js` hands out the Yjs of `vendor/yjs.js` and has no copy of its own, and pdf.js (`vendor/pdf.js` with its worker) opens a PDF and reads its text. |

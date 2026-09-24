@@ -24,6 +24,8 @@ const REJECT_LINGER = 1000;
 const BYE_GRACE = 300; // lets 'bye' leave before the connections close
 const ROUTE_EVERY = 10000;
 const ALIVE = 5000; // a link heard from this recently isn't replaced by a second one from the same member
+const MEET_DELAY = 3000; // after the last change in the members' links: a newcomer's own dials get this long to arrive
+const MAX_GONE = 200;
 const MAX_EARLY = 1000; // tool messages kept between authentication and the link being up
 export const MAX_MEMBERS = 8;
 
@@ -37,6 +39,8 @@ const SIGNALING_ERRORS = new Set(['disconnected', 'network', 'server-error', 'so
 const REJECTIONS = new Set(['version', 'denied', 'duplicate', 'full']);
 // Link endings after which nobody dials again.
 const FINAL_REASONS = new Set(['bye', 'replaced', 'peer-unavailable', 'version', 'denied', 'duplicate', 'full', 'self', 'halt']);
+// Link endings after which that peer ID isn't dialed because others still list it: it left, or can't link with us.
+const GONE_REASONS = new Set(['bye', 'version', 'denied']);
 
 export const COLORS = ['#e8590c', '#0c8599', '#7048e8', '#2f9e44', '#d6336c', '#1971c2', '#c08000', '#5c7cfa'];
 
@@ -306,7 +310,8 @@ class Link {
  * `open` stays while the device is in the room, alone or not; members come and go as events.
  *
  * The anchor is whoever holds the room's well-known peer ID. Newcomers connect to it, get the member list and
- * dial everyone. When it leaves, any member claims the ID; the server lets only one succeed.
+ * dial everyone. When it leaves, any member claims the ID; the server lets only one succeed. A member that others
+ * are linked to and this device isn't (two newcomers at once) is dialed by the lower peer ID of the two.
  *
  * Events: 'state' (state, error), 'members' (list or details changed), 'link-up' / 'link-down' (member, reason),
  * `msg:<ch>` (message, member), 'binary' (ArrayBuffer, member), 'call' (MediaConnection, member),
@@ -333,6 +338,7 @@ export class Room extends Emitter {
 		this.incoming = new Set(); // links dialed by others that aren't authenticated yet
 		this.entries = new Set(); // entry links: ours to the anchor, or newcomers' to our anchor peer
 		this.redials = new Map(); // peerId → { attempts, timer }
+		this.gone = new Set(); // peer IDs that left or can't link with us, oldest first
 		this.opened = false; // the member peer registered at least once
 		this.signalingLost = false;
 		this.entryFailures = 0; // entry attempts that got no answer since the last success
@@ -344,6 +350,7 @@ export class Room extends Emitter {
 		this._anchorAttempts = 0;
 		this._checkTimer = null;
 		this._claimTimer = null;
+		this._meetTimer = null;
 		this._offDevice = identity.on?.('change', () => {
 			this.self.name = identity.name;
 			this.send(CH.SYS, { type: 'name', name: identity.name });
@@ -820,7 +827,9 @@ export class Room extends Emitter {
 		}
 		// The same device with a new peer ID reloaded its page: the old link is stale.
 		for (const other of [...this.links.values()]) {
-			if (other !== link && other.remote?.deviceId === link.remote.deviceId) other.close('replaced');
+			if (other === link || other.remote?.deviceId !== link.remote.deviceId) continue;
+			other.close('replaced');
+			if (other.peerId !== link.peerId) this._markGone(other.peerId);
 		}
 		if (link.dialer) link.dialFile(this.peer);
 	}
@@ -848,6 +857,7 @@ export class Room extends Emitter {
 		}
 		this.incoming.delete(link);
 		if (this.links.get(link.peerId) === link) this.links.delete(link.peerId);
+		if (GONE_REASONS.has(link.reason)) this._markGone(link.peerId);
 		if (was === 'up') {
 			this.emit('link-down', link.member, link.reason);
 			this.emit('members');
@@ -913,7 +923,10 @@ export class Room extends Emitter {
 				const peers = new Set(Array.isArray(msg.peers) ? msg.peers.map(cleanPeerId).filter(Boolean).slice(0, MAX_MEMBERS * 2) : []);
 				const changed = peers.size !== link.remotePeers.size || [...peers].some(peer => !link.remotePeers.has(peer));
 				link.remotePeers = peers;
-				if (changed) this.emit('links', member);
+				if (changed) {
+					this.emit('links', member);
+					this._scheduleMeet();
+				}
 				break;
 			}
 			case 'name':
@@ -933,6 +946,37 @@ export class Room extends Emitter {
 
 	_shareLinks() {
 		this.send(CH.SYS, { type: 'links', peers: this._upLinks().map(link => link.peerId) });
+	}
+
+	_scheduleMeet() {
+		if (this.destroyed) return;
+		clearTimeout(this._meetTimer);
+		this._meetTimer = setTimeout(() => this._meet(), MEET_DELAY);
+	}
+
+	/**
+	 * Dial the members that others are linked to and this device isn't. Two newcomers welcomed at the same moment
+	 * aren't on each other's list, so only the members' `links` tell them about each other. The lower peer ID
+	 * dials, as for redials; a newcomer's own dials had MEET_DELAY to arrive, and one that did is in `incoming`.
+	 */
+	_meet() {
+		this._meetTimer = null;
+		if (this.destroyed || this.state !== 'open' || !this.peer?.open) return;
+		const self = this.self.peerId;
+		const answering = new Set([...this.incoming].map(link => link.peerId));
+		for (const link of this._upLinks()) {
+			for (const peerId of link.remotePeers) {
+				if (peerId <= self || this.links.has(peerId) || answering.has(peerId) || this.redials.has(peerId) || this.gone.has(peerId)) continue;
+				if (this.links.size >= MAX_MEMBERS - 1) return;
+				this._dial(peerId);
+			}
+		}
+	}
+
+	_markGone(peerId) {
+		this.gone.delete(peerId);
+		this.gone.add(peerId);
+		if (this.gone.size > MAX_GONE) this.gone.delete(this.gone.values().next().value);
 	}
 
 	_adoptTurn(turn) {
@@ -955,7 +999,8 @@ export class Room extends Emitter {
 		this._clearBroker();
 		clearTimeout(this._checkTimer);
 		clearTimeout(this._claimTimer);
-		this._checkTimer = this._claimTimer = null;
+		clearTimeout(this._meetTimer);
+		this._checkTimer = this._claimTimer = this._meetTimer = null;
 		for (const redial of this.redials.values()) clearTimeout(redial.timer);
 		this.redials.clear();
 		for (const link of [...this.links.values(), ...this.incoming, ...this.entries]) link.close('halt');

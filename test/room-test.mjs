@@ -346,6 +346,46 @@ for (let i = 1; i < 9; i++) {
 check('the ninth device is refused as full', crowd.at(-1).state === 'failed' && crowd.at(-1).error === 'full', `${crowd.at(-1).state} ${crowd.at(-1).error}`);
 check('the first eight form a full mesh', [big, ...crowd.slice(0, 7)].every(room => room.members.length === 7));
 
+// 14. Two newcomers at the same moment: each is welcomed before the other is a member, so neither is on the
+// other's list. The members' `links` tell them about each other, and the lower peer ID dials.
+const t0 = device('T0', newRoomCode(), { claimFirst: true });
+await advance(200);
+const t1 = device('T1', t0.code, { known: false });
+const t2 = device('T2', t0.code, { known: false });
+await advance(1000);
+check('two newcomers at once both get in', t1.state === 'open' && t2.state === 'open' && names(t0) === 'T1,T2');
+await advance(4000);
+check('and link with each other', names(t1) === 'T0,T2' && names(t2) === 'T0,T1', `T1: ${names(t1)}, T2: ${names(t2)}`);
+const [low, high] = [t1, t2].sort((p, q) => (p.self.peerId < q.self.peerId ? -1 : 1));
+check('the lower peer ID dialed, once', low.links.get(high.self.peerId)?.dialer === true && high.links.get(low.self.peerId)?.dialer === false && [t0, t1, t2].every(r => r.links.size === 2 && r.incoming.size === 0));
+await advance(100);
+check('everyone knows everyone is linked', t0.isLinked(t1.self.peerId, t2.self.peerId) && t1.isLinked(t0.self.peerId, t2.self.peerId));
+// The higher one leaves. A member's list that still names it doesn't bring it back.
+const highPeer = high.self.peerId;
+const leavingHigh = high.leave();
+await advance(400);
+await leavingHigh;
+low._onLinkMessage(low.links.get(t0.self.peerId), { ch: CH.SYS, type: 'links', peers: [low.self.peerId, highPeer] });
+await advance(4000);
+check('a member that said bye isn’t dialed because another still lists it', names(low) === 'T0' && !low.links.has(highPeer), `${names(low)} ${low.links.has(highPeer)}`);
+// A member someone lists that this device can't reach: tried and then left alone, not dialed forever.
+const u0 = device('U0', newRoomCode(), { claimFirst: true });
+await advance(200);
+const u1 = device('U1', u0.code, { known: false });
+const u2 = device('U2', u0.code, { known: false });
+net.blocked = (from, to) => [from.device, to.device].includes(u1) && [from.device, to.device].includes(u2);
+const dials = () => [u1, u2].reduce((n, r) => n + (r.dialsTo ?? 0), 0);
+for (const r of [u1, u2]) {
+	const dial = r._dial.bind(r);
+	r._dial = peerId => {
+		if (peerId === u1.self.peerId || peerId === u2.self.peerId) r.dialsTo = (r.dialsTo ?? 0) + 1;
+		dial(peerId);
+	};
+}
+await advance(5 * 60000);
+check('two members that can’t reach each other stop trying', dials() >= 1 && dials() <= 7 && names(u0) === 'U1,U2', `${dials()} dials`);
+net.blocked = () => false;
+
 const unexpected = warnings.filter(w => !/peer error|connection error/.test(w));
 check('no unexpected warnings', unexpected.length === 0, unexpected.slice(0, 3).join(' | '));
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');

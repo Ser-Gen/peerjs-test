@@ -720,7 +720,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
   - Simplification keeps a point where the pressure changes as well as where the line bends, so a stylus stroke keeps its taper.
   - Images, the pointers of the others and Select were not in the plan.
 - Tests: `node test/run.mjs whiteboard` (91 checks) runs the Whiteboard with real rooms on the fake network: three devices and a headless member, with a canvas that records what is drawn and images that carry their size in their first bytes. Drawing and the stroke in progress on the others, three at once, simplification, pressure, undo and redo of one's own strokes only, the highlighter, colours and sizes, the eraser and its undo, a pinch, a palm after a stylus, drawing offline and merging, a pasted screenshot, a paste into a text field, moving and resizing, Paste image with a large photo and with no image, Delete, a file that isn't an image, a drop, the board list, rename and delete, Send to Chat and the exported PNG, Download, forged items and awareness, and the unread mark. The app test opens the Whiteboard tab and makes a board; the desktop test has the new default and a layout saved before the Whiteboard. 396 checks in all.
-- Found while testing, not changed here: two devices that join at the same moment are never linked to each other (see **Backlog → Robustness of the room**). The test lets its devices join one at a time.
+- Found while testing: two devices that join at the same moment were never linked to each other. Fixed in 0.13.1 (see **Done outside the slices → Two newcomers at once**); the test's phone and tablet now join together.
 - Checked in Node, not in a browser: the checklist below is still to do.
 
 **Checklist**
@@ -929,6 +929,20 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 - Not changed: with others still in the room, a waiting stream goes only to a newcomer. Handing it to someone already there is Slice 11's "every member receives it".
 - Covered in the jsdom app test, where the Stream tool's own timers run 100× faster: the viewer leaves, the bar pauses for it, then waits for anyone with the capture still on; the same device coming back gets the same stream id.
 
+### Two newcomers at once (2026-09-24, 0.13.1)
+
+**Why:** found while testing the whiteboard. Two devices that joined at the same moment were each welcomed by the anchor before the other was a member, so neither was on the other's list, and nothing made them dial each other later. The documents, the chat and the boards still reached both through the others, but voice, streams and files sent once never passed between the two.
+
+**As built**
+- Members already announce their direct links (`links`, for the Editor's forwarding). A member that others list and this device isn't linked to is now dialed, by the lower peer ID of the two, as for redials. It waits until the lists have been still for 3 s, so a newcomer's own dials arrive before anyone dials it back; a dial that is already on its way in counts as a link.
+- A dial that fails is redialed up to 6 times, as before, and then left alone until the lists change again, so two devices that can't reach each other don't try forever.
+- A peer ID that said `bye`, was rejected (a different app version, a failed handshake) or reloaded under a new ID isn't dialed because someone's list still names it.
+- No message changed: `PROTOCOL_VERSION` stays 6. A device on 0.13.0 doesn't dial on its own but answers a dial.
+- Tests: the room test grew from 30 to 36 checks: two newcomers at once end linked with one dial from the lower peer ID, a member that left isn't brought back by a stale list, and two members that can't reach each other stop after 7 dials. The whiteboard test's phone and tablet now join together (90 checks, one fewer: the wait for the phone alone is gone). 401 checks in all.
+
+**Checklist**
+- [ ] Open the room link on two phones at the same moment while a laptop holds the room: within a few seconds both phones list each other, and voice works between them.
+
 ## Backlog (to triage)
 
 Ideas raised on 2026-09-23 and not yet scheduled into a slice. Size is a rough guess: **S** about half a day, **M** a day or two, **L** a slice of its own.
@@ -941,7 +955,6 @@ Ideas raised on 2026-09-23 and not yet scheduled into a slice. Size is a rough g
 - **Small room tools** (S each) — a poll, a shared timer, dice. Good practice for the tool API before the game slices.
 
 ### Robustness of the room
-- **Two newcomers at once** (S) — found on 2026-09-24 while testing the whiteboard: devices that join at the same moment are each welcomed before the other is a member, and nothing makes them dial each other later. The documents, the chat and the boards still reach them through the others, but voice, streams and files sent once don't pass between the two. A fix: a member that hears in `links` of a member it isn't linked to dials it (the lower peer ID, as for redials).
 - **Fallback anchor IDs** (M) — derive `anchor2` and `anchor3` from the code. Today a crashed anchor holds the room's address for about 100 s and newcomers wait; with fallbacks they get in at once.
 - **Self-hosted signaling** (S) — a `peerjs-server` guide beside `docs/turn-server.md`, on the VPS that already runs coturn. Removes the "public 0.peerjs.com is unreliable" risk.
 - **Offline, the rest of it** (S) — the service worker of 2026-09-23 already opens the app with no internet, but `vendor/editor.js` is cached only after the Editor tab has been opened once, and a device with no network has no signaling server to talk to. Pairs with a signaling server on the same LAN.
