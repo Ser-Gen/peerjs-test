@@ -428,6 +428,22 @@ offline.unmount();
 const back = device('Tablet', 'c');
 await until('back online, the strokes drawn apart merge on both sides', () => boardName(back) === 'Board 1' && counts(back) === counts(A) && byDevice(C).length === 2, 8000, () => `${counts(back)} / ${counts(A)}`);
 
+// Chrome sometimes takes the capture away just before a mouse button is released: the stroke stays all the same.
+const beforeLost = itemsOnDesk(boardId).length;
+await drag(A, [100, 740], [250, 760], { up: false });
+stageOf(A).dispatchEvent(new window.PointerEvent('lostpointercapture', { pointerId: 1, pointerType: 'mouse', bubbles: true }));
+pointer(A, 'pointerup', { x: 250, y: 760 });
+await until('a stroke that loses its capture just before the release is kept on every device', () => itemsOnDesk(boardId).length === beforeLost + 1 && counts(back) === counts(A));
+await until('and is no longer in progress', () => !liveStrokes().includes('Laptop'));
+await drag(A, [100, 780], [200, 780]);
+await until('the next stroke draws as usual', () => itemsOnDesk(boardId).length === beforeLost + 2);
+// A touch the browser takes over is still dropped.
+await drag(B, [100, 650], [200, 650], { id: 15, kind: 'touch', up: false });
+pointer(B, 'pointercancel', { id: 15, kind: 'touch', x: 200, y: 650 });
+stageOf(B).dispatchEvent(new window.PointerEvent('lostpointercapture', { pointerId: 15, pointerType: 'touch', bubbles: true }));
+await sleep(150);
+check('a touch the browser cancels draws nothing', itemsOnDesk(boardId).length === beforeLost + 2 && !liveStrokes().includes('Phone'));
+
 // --- images ---
 
 // Ctrl+V with a screenshot on the clipboard.

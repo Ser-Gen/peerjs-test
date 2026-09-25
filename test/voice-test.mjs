@@ -121,6 +121,7 @@ class FakeRoom extends Emitter {
 		if (!room || this.offline) return null;
 		const mine = new FakeMediaConnection(holder(), to, metadata, stream ?? null);
 		const theirs = new FakeMediaConnection(holder(), this.self.peerId, metadata, null);
+		theirs.connectionId = mine.connectionId;
 		mine.other = theirs;
 		theirs.other = mine;
 		this.calls.push(mine);
@@ -242,6 +243,21 @@ check('and they get no audio from it', hears(a, c) === null && hears(b, c) === n
 check('every pair has exactly one call',
 	[[a, b], [a, c], [b, c]].every(([x, y]) => callBetween(x, y) && callBetween(y, x) && callBetween(x, y).answered !== callBetween(y, x).answered));
 
+// It takes the microphone after all. Those calls carried one voice, so they are made again, and the members
+// that dial have to be told: their ends of the old calls would otherwise stay.
+const listenerCalls = [callBetween(a, c), callBetween(b, c)];
+await c.voice.useMicrophone();
+await settle();
+check('a listener that takes the microphone hangs up, and the others drop their ends', listenerCalls.every(call => call.closed));
+await sleep(REDIAL_DELAY + 100);
+check('and they call it again, now hearing it', hears(a, c) === c.voice.stream && hears(b, c) === c.voice.stream && hears(c, a) === a.voice.stream && c.room.calls.length === 0);
+c.voice.leave();
+mic.available = false;
+await c.voice.join();
+mic.available = true;
+await sleep(REDIAL_DELAY + 100);
+check('(back to listening)', c.voice.listening && hears(c, a) === a.voice.stream && hears(c, b) === b.voice.stream);
+
 // --- a call that connects but never carries audio ---
 
 check('a call that has brought audio is not waited for any more', peerOf(a, b).watch === null && peerOf(b, a).watch === null);
@@ -256,6 +272,22 @@ check('a call that brought no audio is given up on', stalled.closed === true && 
 await sleep(REDIAL_DELAY + 100);
 check('and the pair is dialled again, so silence is not forever',
 	callBetween(a, b)?.closed === false && hears(a, b) === b.voice.stream && hears(b, a) === a.voice.stream);
+
+// One way only: the side that answered hears nothing, while the side that dialled hears it and has no reason to
+// give up. peerjs doesn't tell the other end when a call is closed, so without a word both would wait forever.
+const oneWay = callBetween(b, a);
+const dialled = callBetween(a, b);
+console.warn = () => {};
+b.voice.stalled(peerOf(b, a), oneWay);
+console.warn = warn;
+await settle();
+check('when the side that answered gives up, the side that dialled is told and drops its end',
+	oneWay.closed && dialled.closed && callBetween(a, b) === null);
+await sleep(REDIAL_DELAY + 100);
+check('and dials again', callBetween(a, b)?.closed === false && callBetween(a, b) !== dialled && hears(a, b) === b.voice.stream && hears(b, a) === a.voice.stream);
+b.room.send('voice', { type: 'hangup', call: oneWay.connectionId }, a.room.self.peerId);
+await settle();
+check('a hangup for a call that was already replaced leaves the new one alone', callBetween(a, b)?.closed === false && hears(a, b) === b.voice.stream);
 
 // --- a link that drops and comes back after a reload ---
 

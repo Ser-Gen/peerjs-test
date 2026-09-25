@@ -943,6 +943,25 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 **Checklist**
 - [ ] Open the room link on two phones at the same moment while a laptop holds the room: within a few seconds both phones list each other, and voice works between them.
 
+### Voice stuck on "connecting…", a Mute that needed two taps, and whiteboard lines that vanished (2026-09-25, 0.13.2)
+
+**Why:** reported after a test on phones: the first time two people joined voice it said "2 in voice · connecting…" and they couldn't hear each other until they tried again; Mute often needed a second tap; and sometimes a whiteboard line drawn with the mouse disappeared when the button was released.
+
+**As built**
+- **Mute needed two taps.** The room bar was built again from scratch on every ping answer (every 2 s per member) and every time someone started or stopped speaking, which while people talk is several times a second. A tap that began on one Mute button and ended on its replacement was no click at all. The bar is now made once and updated in place; the voice sheet keeps its rows too, so a volume slider can be dragged while someone speaks.
+- **"Connecting…" for good.** When one side of a call hears nothing for 10 s it gives up and closes its end, but peerjs never tells the other end, so the side that dials kept a dead call, and it only dials when it has none. If it could hear the other (one-way audio), it had no reason to give up either: both sat on "connecting…" until someone left voice. The side that gives up now sends `hangup` with the call's ID, and the pair is dialled again a second later. A listener that takes the microphone does the same. A call to a device that isn't in voice (any more) is answered with its state, so the caller stops.
+- The fake network in the tests closed both ends of a call when one was closed, which is why nothing caught this; it now behaves like peerjs.
+- What made the first call silent is not known: one-way audio at the start of a call happens with a microphone that is busy or not yet delivering (on Android the first permission prompt, or a phone call in progress). Now it costs about 11 s instead of a rejoin. `(failed) net::ERR_CACHE_MISS` in the console is the browser's, not PeerKit's.
+- **The whiteboard line.** A second test showed it more closely: the line vanished on both screens the moment the mouse button came up, about one line in five, and Chrome's console (`monitorEvents` on `.wb-stage`) showed `lostpointercapture` before `pointerup`. The board took a lost capture for a cancelled press and dropped the stroke, so it was never stored and the others' copy of the stroke in progress went too. Why Chrome takes the capture away first is not known (nothing in PeerKit moves the board). A lost capture now ends the gesture as a release: the stroke is kept, and the `pointerup` after it does nothing. A `pointercancel` (the browser taking a touch over) still drops it. It was neither the connection nor Yjs: the drawing device stores the stroke in its own copy before sending anything, and 150 strokes drawn with random timing all arrived.
+- If two phones joined at the same moment on 0.13.0, they weren't linked to each other at all (fixed in 0.13.1), and voice between them could only say "connecting…". That fits "when one left and the other connected, there were no such problems".
+- Tests: the voice test grew from 43 to 49 checks (a one-way call given up on by the side that answered, a stale hangup that leaves the new call alone, a listener taking the microphone), the app test from 57 to 60 (the Mute button and the voice sheet's slider survive a redraw; Leave voice hidden outside voice), the whiteboard test from 90 to 94 (a capture lost just before the release keeps the stroke; a cancelled touch still draws nothing). 414 checks in all.
+
+**Checklist**
+- [ ] While someone talks, Mute and Unmute react to the first tap, on the phone and on the laptop.
+- [ ] Open the voice settings sheet while someone talks: the volume slider can be dragged.
+- [ ] Two phones join voice for the first time on that phone (the permission prompt appears): if it says "connecting…", it sorts itself out within about 15 s without leaving voice.
+- [ ] Draw on the whiteboard with the mouse while a phone watches, several times: every line stays on both screens.
+
 ## Backlog (to triage)
 
 Ideas raised on 2026-09-23 and not yet scheduled into a slice. Size is a rough guess: **S** about half a day, **M** a day or two, **L** a slice of its own.

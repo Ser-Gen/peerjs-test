@@ -96,6 +96,24 @@ let shareWaiting = null; // the same share, described, while there is no room to
 const shareListeners = new Set();
 const handOffs = new Map(); // tool id → what it does with a file another tool hands it
 
+/*
+ * The room bar is drawn again on every ping answer and every time someone starts or stops speaking. Its buttons
+ * are made once and only updated: a button replaced between the press and the release never gets the click,
+ * which is how Mute came to need a second tap while people talked.
+ */
+const bar = {
+	members: h('div', { class: 'members', role: 'list', 'aria-label': 'People in the room' }),
+	note: h('span', { class: 'members-note' }),
+	invite: button('Invite', 'share', () => showInvite(), 'btn small push'),
+	voice: h('div', { class: 'voice-bar' }),
+	voiceMain: h('button', { type: 'button', onclick: () => onVoiceButton() }),
+	voiceNote: h('span', { class: 'voice-note' }),
+	voiceSound: button('Tap for sound', 'volume-x', () => voice.resumeAudio(), 'btn small primary'),
+	voiceSheet: h('button', { type: 'button', class: 'icon-btn small', title: 'Voice settings', 'aria-label': 'Voice settings', onclick: () => showVoiceSheet() }, icon('chevron-down')),
+	voiceLeave: button('Leave voice', null, () => voice.leave(), 'btn small ghost push'),
+};
+bar.voice.append(bar.voiceMain, bar.voiceNote, bar.voiceSound, bar.voiceSheet, bar.voiceLeave);
+
 const settingsView = new SettingsView(els.settings, { onClose: closeSettings, sessionProfile: () => profile, ice });
 if (!room && !bootError) {
 	new StartView(els.startRoot, {
@@ -290,6 +308,7 @@ function renderRtt() {
 
 function renderRoomBar() {
 	if (!room || !everOpen) return;
+	if (!bar.members.isConnected) els.roomBar.replaceChildren(bar.members, bar.note, bar.invite, bar.voice);
 	const chip = (member, label, title, mark) => h('span', { class: 'member-chip', 'data-voice': mark, style: `--who: ${member.color}`, title },
 		mark ? icon(mark === 'muted' ? 'mic-off' : 'mic') : null,
 		label);
@@ -300,13 +319,28 @@ function renderRoomBar() {
 		const details = [member.rtt != null && `${member.rtt} ms`, route].filter(Boolean).join(', ');
 		chips.push(chip(member, member.name, details ? `${member.name}: ${details}` : member.name, voice.mark(member.peerId)));
 	}
+	bar.members.replaceChildren(...chips); // nothing to tap in there
 	const connecting = room.connecting;
-	els.roomBar.replaceChildren(
-		h('div', { class: 'members', role: 'list', 'aria-label': 'People in the room' }, chips),
-		connecting ? h('span', { class: 'members-note' }, `Connecting to ${connecting}…`) : null,
-		!members.length && !connecting ? h('span', { class: 'members-note' }, 'Nobody else is here yet') : null,
-		button('Invite', 'share', showInvite, `btn small${members.length ? '' : ' primary'} push`),
-		renderVoice());
+	setText(bar.note, connecting ? `Connecting to ${connecting}…` : members.length ? '' : 'Nobody else is here yet');
+	bar.invite.className = `btn small${members.length ? '' : ' primary'} push`;
+	renderVoice();
+}
+
+/** Text that is left alone when it hasn't changed, and hidden when there is none. */
+function setText(el, text) {
+	if (el.textContent !== text) el.textContent = text;
+	el.hidden = !text;
+}
+
+const buttonFaces = new WeakMap();
+
+/** A button's label and icon, touched only when they change, so a press in progress keeps its target. */
+function setButton(el, label, iconName, className) {
+	el.className = className;
+	const face = `${iconName}\n${label}`;
+	if (buttonFaces.get(el) === face) return;
+	buttonFaces.set(el, face);
+	el.replaceChildren(...(iconName ? [icon(iconName)] : []), label);
 }
 
 // --- voice ---
@@ -315,23 +349,29 @@ function renderRoomBar() {
 function renderVoice() {
 	const others = voice.others.length;
 	if (!voice.active) {
-		return h('div', { class: 'voice-bar' },
-			button(voice.busy ? 'Asking…' : 'Join voice', 'mic', joinVoice, `btn small${others ? ' primary' : ''}`),
-			h('span', { class: 'voice-note' }, others ? `${others} in voice` : 'Nobody is talking yet'));
+		setButton(bar.voiceMain, voice.busy ? 'Asking…' : 'Join voice', 'mic', `btn small${others ? ' primary' : ''}`);
+		setText(bar.voiceNote, others ? `${others} in voice` : 'Nobody is talking yet');
+	} else {
+		if (voice.listening) setButton(bar.voiceMain, 'Use microphone', 'mic', 'btn small');
+		else setButton(bar.voiceMain, voice.muted ? 'Unmute' : 'Mute', voice.muted ? 'mic-off' : 'mic', `btn small${voice.muted ? ' primary' : ''}`);
+		const bits = others ? [`${voice.count} in voice`] : ['Waiting for someone to join voice'];
+		if (voice.listening) bits.push('listening only');
+		// Say so while someone's audio is missing, instead of counting them in as if they could be heard.
+		if (voice.waiting.length) bits.push(others > 1 ? `connecting to ${voice.waiting.length}…` : 'connecting…');
+		setText(bar.voiceNote, bits.join(' · '));
 	}
-	const bits = others ? [`${voice.count} in voice`] : ['Waiting for someone to join voice'];
-	if (voice.listening) bits.push('listening only');
-	// Say so while someone's audio is missing, instead of counting them in as if they could be heard.
-	if (voice.waiting.length) bits.push(others > 1 ? `connecting to ${voice.waiting.length}…` : 'connecting…');
-	const note = bits.join(' · ');
-	return h('div', { class: 'voice-bar', 'data-mine': voice.selfMark },
-		voice.listening
-			? button('Use microphone', 'mic', useMicrophone, 'btn small')
-			: button(voice.muted ? 'Unmute' : 'Mute', voice.muted ? 'mic-off' : 'mic', () => voice.toggleMute(), `btn small${voice.muted ? ' primary' : ''}`),
-		h('span', { class: 'voice-note' }, note),
-		voice.blocked ? button('Tap for sound', 'volume-x', () => voice.resumeAudio(), 'btn small primary') : null,
-		others ? h('button', { type: 'button', class: 'icon-btn small', title: 'Voice settings', 'aria-label': 'Voice settings', onclick: showVoiceSheet }, icon('chevron-down')) : null,
-		button('Leave voice', null, () => voice.leave(), 'btn small ghost push'));
+	if (voice.selfMark) bar.voice.dataset.mine = voice.selfMark;
+	else delete bar.voice.dataset.mine;
+	bar.voiceSound.hidden = !voice.active || !voice.blocked;
+	bar.voiceSheet.hidden = !voice.active || !others;
+	bar.voiceLeave.hidden = !voice.active;
+}
+
+/** One button for joining, the microphone of a listener, and mute: what it does is decided when it is pressed. */
+function onVoiceButton() {
+	if (!voice.active) joinVoice();
+	else if (voice.listening) useMicrophone();
+	else voice.toggleMute();
 }
 
 async function joinVoice() {
@@ -355,41 +395,56 @@ function showVoiceSheet() {
 		h('p', { class: 'hint' }, 'Volume and mute are for this device: the others still hear that person.'),
 		h('div', { class: 'actions end' }, button('Done', null, () => dialog.close(), 'btn ghost'))));
 
+	// Redrawn whenever someone starts or stops speaking, so each row is made once and then updated: a slider
+	// being dragged or a mute being tapped keeps its element.
+	const rows = new Map(); // peer ID → { peer, li, label, status, mute, slider }
+	const makeRow = peer => {
+		const row = { peer, label: document.createTextNode(''), status: h('small') };
+		row.name = h('span', { class: 'voice-name' }, row.label, row.status);
+		row.mute = h('button', {
+			type: 'button',
+			onclick: () => voice.setPeerMuted(row.peer.deviceId, !voice.mutedFor(row.peer.deviceId)),
+		});
+		row.slider = h('input', {
+			type: 'range',
+			min: '0',
+			max: '100',
+			oninput: e => voice.setVolume(row.peer.deviceId, Number(e.target.value) / 100),
+		});
+		row.li = h('li', { class: 'voice-row' }, row.name, row.mute, row.slider);
+		return row;
+	};
+	const updateRow = (row, peer) => {
+		row.peer = peer;
+		const off = voice.mutedFor(peer.deviceId);
+		const color = room.member(peer.peerId)?.color;
+		if (color) row.name.style.setProperty('--who', color);
+		else row.name.style.removeProperty('--who');
+		if (row.label.data !== peer.name) row.label.data = peer.name;
+		setText(row.status, voice.statusOf(peer) ?? '');
+		setButton(row.mute, '', off ? 'volume-x' : 'volume', 'icon-btn small');
+		row.mute.title = off ? `Hear ${peer.name} again` : `Mute ${peer.name} here`;
+		row.mute.setAttribute('aria-pressed', String(off));
+		row.slider.setAttribute('aria-label', `Volume for ${peer.name}`);
+		row.slider.disabled = off;
+		const value = String(Math.round(voice.volumeOf(peer.deviceId) * 100));
+		if (row.slider.value !== value) row.slider.value = value;
+	};
 	const renderList = () => {
 		const others = voice.others;
+		for (const id of [...rows.keys()]) if (!others.some(peer => peer.peerId === id)) rows.delete(id);
 		if (!others.length) {
 			list.replaceChildren(h('li', { class: 'hint' }, 'Nobody else is in voice.'));
 			return;
 		}
-		list.replaceChildren(...others.map(peer => {
-			const off = voice.mutedFor(peer.deviceId);
-			const color = room.member(peer.peerId)?.color;
-			const slider = h('input', {
-				type: 'range',
-				min: '0',
-				max: '100',
-				value: String(Math.round(voice.volumeOf(peer.deviceId) * 100)),
-				'aria-label': `Volume for ${peer.name}`,
-				disabled: off,
-				oninput: e => voice.setVolume(peer.deviceId, Number(e.target.value) / 100),
-			});
-			const status = voice.statusOf(peer);
-			return h('li', { class: 'voice-row' },
-				h('span', { class: 'voice-name', style: color ? `--who: ${color}` : null },
-					peer.name,
-					status ? h('small', {}, status) : null),
-				h('button', {
-					type: 'button',
-					class: 'icon-btn small',
-					title: off ? `Hear ${peer.name} again` : `Mute ${peer.name} here`,
-					'aria-pressed': String(off),
-					onclick: () => {
-						voice.setPeerMuted(peer.deviceId, !off);
-						renderList();
-					},
-				}, icon(off ? 'volume-x' : 'volume')),
-				slider);
-		}));
+		const items = others.map(peer => {
+			if (!rows.has(peer.peerId)) rows.set(peer.peerId, makeRow(peer));
+			const row = rows.get(peer.peerId);
+			updateRow(row, peer);
+			return row.li;
+		});
+		// Only when who is listed changes.
+		if (items.length !== list.children.length || items.some((li, i) => list.children[i] !== li)) list.replaceChildren(...items);
 	};
 	renderList();
 

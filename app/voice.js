@@ -17,6 +17,8 @@ const CALL_TIMEOUT = 10000; // ms to wait for the audio of a call before dialing
  *
  * Protocol (ch: 'voice'). Media goes over a peerjs call with metadata {kind: 'voice'}.
  *   state {on, muted, mic}   the sender's voice state; sent on every link up and whenever it changes
+ *   hangup {call}            the sender ended that call (its peerjs connection ID) while both stay in voice;
+ *                            peerjs doesn't tell the other side, which would keep a dead call and never dial again
  *
  * One call per pair, not per direction: of two members in voice the one with a microphone dials, and when
  * both have one the lower peer ID dials (the rule the links use). The other answers with its own
@@ -216,6 +218,7 @@ export class Voice extends Emitter {
 	}
 
 	onMessage(msg, member) {
+		if (msg?.type === 'hangup') return this.onHangup(msg, member);
 		if (msg?.type !== 'state') return;
 		const peer = this.peerFor(member);
 		const was = peer.active;
@@ -228,10 +231,20 @@ export class Voice extends Emitter {
 		this.changed();
 	}
 
+	/** The other side gave up on a call: drop our end too, and the side that dials calls again. */
+	onHangup(msg, member) {
+		const peer = this.peers.get(member.peerId);
+		if (!peer?.call || typeof msg.call !== 'string' || peer.call.connectionId !== msg.call) return; // an older call
+		this.endCall(peer);
+		this.retry(peer);
+		this.changed();
+	}
+
 	onCall(call, member) {
 		if (call.metadata?.kind !== 'voice') return; // camera and screen belong to the Stream tool
 		if (!this.active) {
 			call.close(); // not in voice: nothing to answer with, and nothing should start playing
+			this.announce(member.peerId); // they think we are in voice: say we aren't, so they stop calling
 			return;
 		}
 		const peer = this.peerFor(member);
@@ -326,8 +339,16 @@ export class Voice extends Emitter {
 		// The state of the connection is the only clue there is when a call goes nowhere, so say it out loud.
 		console.warn(`[peerkit] no audio from ${peer.name}; dialing again`,
 			{ ice: pc?.iceConnectionState, connection: pc?.connectionState, signaling: pc?.signalingState });
-		this.endCall(peer); // the other side sees it close and dials back if it is the one that dials
+		// The other side may be hearing us fine and have no reason to give up: it has to be told.
+		this.hangUp(peer);
 		this.retry(peer);
+	}
+
+	/** End a call and tell the other side which one, while both stay in voice. */
+	hangUp(peer) {
+		const id = peer.call?.connectionId;
+		this.endCall(peer);
+		if (typeof id === 'string') this.room.send(CH.VOICE, { type: 'hangup', call: id }, peer.peerId);
 	}
 
 	endCall(peer) {
@@ -534,7 +555,7 @@ export class Voice extends Emitter {
 		}
 		this.stream = stream;
 		this.muted = false;
-		for (const peer of this.peers.values()) this.endCall(peer); // those calls carried one voice only
+		for (const peer of this.peers.values()) this.hangUp(peer); // those calls carried one voice only
 		disconnect(this.localLevel);
 		this.localLevel = this.analyse(stream);
 		this.startLevels();
@@ -562,7 +583,7 @@ export class Voice extends Emitter {
 		const [track] = stream.getAudioTracks();
 		for (const peer of this.peers.values()) {
 			// A listener had nothing to replace: those calls have to be made again.
-			if (!had) this.endCall(peer);
+			if (!had) this.hangUp(peer);
 			else await replaceTrack(peer.call, track);
 		}
 		stopStream(old);

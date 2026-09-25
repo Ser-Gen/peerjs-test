@@ -130,9 +130,11 @@ export class BoardView {
 		on('pointermove', e => this.onPointerMove(e));
 		on('pointerup', e => this.onPointerUp(e));
 		on('pointercancel', e => this.onPointerUp(e));
-		// A pointer whose release never comes here (the page hid the board) must not stay pressed.
+		// A lost capture ends the gesture as a release, and what was drawn stays: Chrome sometimes takes the capture
+		// away just before the mouse button comes up, and a pointer whose release never comes here (the page hid the
+		// board) must not stay pressed. A pointercancel, the browser taking a touch over, still drops the stroke.
 		on('lostpointercapture', e => {
-			if (this.pointers.has(e.pointerId)) this.onPointerUp({ pointerId: e.pointerId, type: 'pointercancel' });
+			if (this.pointers.has(e.pointerId)) this.onPointerUp({ pointerId: e.pointerId, type: 'pointerup' });
 		});
 		on('pointerleave', e => this.onLeave(e));
 		on('wheel', e => this.onWheel(e), { passive: false });

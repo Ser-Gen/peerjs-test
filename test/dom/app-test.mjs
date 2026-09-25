@@ -359,9 +359,23 @@ if (MODE === 'start') {
 	await until('a member in voice is called', () => voiceCalls.length === 1 && voiceCalls[0].metadata?.kind === 'voice');
 	await until('and shows on its chip', () => chips()[1].dataset.voice === 'muted');
 	check('the bar counts both', voiceBar().textContent.includes('2 in voice'));
+	// A ping answer or someone starting to speak redraws the bar: a button swapped out mid-press loses its click.
+	const muteButton = buttonByText(voiceBar(), 'Mute');
+	const room = window.peerkit;
+	room.emit('rtt', room.members[0]);
+	room.emit('members');
+	check('the bar is updated in place, so a tap on Mute lands while it is redrawn', buttonByText(voiceBar(), 'Mute') === muteButton && muteButton.isConnected);
+	$('[aria-label="Voice settings"]').click();
+	const slider = () => document.querySelector('dialog[open] input[type="range"]');
+	const firstSlider = slider();
+	room.emit('members');
+	check('the voice sheet keeps its slider while it is redrawn, so a drag goes on', Boolean(firstSlider) && slider() === firstSlider && firstSlider.isConnected);
+	buttonByText(document.querySelector('dialog[open]'), 'Done').click();
 	buttonByText(voiceBar(), 'Leave voice').click();
-	await until('leaving tells the member and ends the call', () => voiceCalls[0].closed && voiceHeard.some(m => m.type === 'state' && m.on === false));
+	await until('leaving tells the member and ends the call', () => voiceCalls[0].other.closed && voiceHeard.some(m => m.type === 'state' && m.on === false));
 	check('this device drops its mark while the member stays in voice', !chips()[0].dataset.voice && chips()[1].dataset.voice === 'muted');
+	check('the bar offers Join voice again, and hides Mute’s neighbours', buttonByText(voiceBar(), 'Join voice') === muteButton
+		&& buttonByText(voiceBar(), 'Leave voice').hidden && $('[aria-label="Voice settings"]').hidden && voiceBar().textContent.includes('1 in voice'));
 
 	// Stream: one member, so no picker; buttons enabled.
 	buttonByText($('#tabs'), 'Stream').click();

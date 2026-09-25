@@ -124,6 +124,7 @@ export class FakePeer extends Em {
 			const target = net.peers.get(id);
 			if (local.closed || !target || target.destroyed || isSilent(this) || isSilent(target) || net.blocked(this, target)) return;
 			const remote = new FakeMediaConnection(target, this.id, options.metadata ?? {}, null);
+			remote.connectionId = local.connectionId;
 			local.other = remote;
 			remote.other = local;
 			target.emit('call', remote);
@@ -203,11 +204,18 @@ export class FakeMediaStream {
 	}
 }
 
-/** peerjs MediaConnection: `answer(stream)` opens it, and each side gets the other's stream if it sent one. */
+let calls = 0;
+
+/**
+ * peerjs MediaConnection: `answer(stream)` opens it, and each side gets the other's stream if it sent one. Both
+ * ends share a `connectionId`. Closing one end doesn't close the other: peerjs sends nothing, and the other end
+ * stays until ICE gives up on it, which can take half a minute or never happen.
+ */
 export class FakeMediaConnection extends Em {
 	constructor(owner, peer, metadata, stream) {
 		super();
 		this.type = 'media';
+		this.connectionId = `mc_${++calls}`;
 		this.owner = owner;
 		this.peer = peer;
 		this.metadata = metadata;
@@ -239,8 +247,6 @@ export class FakeMediaConnection extends Em {
 		this.open = false;
 		this.owner.calls.delete(this);
 		this.emit('close');
-		const other = this.other;
-		if (other && !other.closed) setTimeout(() => other.close(), 2);
 	}
 }
 
