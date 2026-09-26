@@ -14,6 +14,7 @@ import { APP_VERSION } from '../version.js';
 import { install } from '../pwa.js';
 import { PROTOCOL_VERSION } from '../protocol.js';
 import { LIMITS, canKeep, keptSettings, keptUsage } from '../tools/chat/kept.js';
+import { ENGINES, editorPrefs } from '../tools/editor/prefs.js';
 import { copyText, defaultDeviceName, formatBytes } from '../util.js';
 import { button, h, icon, openDialog, toast } from './dom.js';
 
@@ -136,6 +137,15 @@ export class SettingsView {
 						h('small', {}, 'Others in the room see this name.'))),
 
 				this.renderKept(),
+
+				h('section', { class: 'settings-section' },
+					h('h2', {}, 'Editor'),
+					h('label', { class: 'field' },
+						h('span', {}, 'Documents open in'),
+						h('select', { class: 'input select', onchange: e => editorPrefs.setEngine(e.target.value) },
+							Object.entries(ENGINES).map(([id, label]) => h('option', { value: id, selected: id === editorPrefs.engine }, label))),
+						h('small', {}, 'Automatic uses Monaco with a mouse and CodeMirror on a touch screen. Monaco is hard to use on a phone. ',
+							'This is for this device only: everyone edits the same documents, whichever editor they use.'))),
 
 				h('section', { class: 'settings-section' },
 					h('h2', {}, 'Backup'),

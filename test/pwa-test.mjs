@@ -52,9 +52,9 @@ const walk = dir => readdirSync(`${ROOT}/${dir}`, { withFileTypes: true }).flatM
 	entry.isDirectory() ? walk(`${dir}/${entry.name}`) : entry.name.endsWith('.js') ? [`${dir}/${entry.name}`] : []);
 const shell = sw.match(/const SHELL = \[([\s\S]*?)\];/)[1].match(/'([^']+)'/g).map(s => s.slice(1, -1));
 // The exceptions are cached on first use: vendor/editor.js (0.7 MB) when the Editor tab is first opened,
-// vendor/dockview.js (0.4 MB) only on a wide screen with a mouse, which a phone never has, and pdf.js (1.7 MB)
-// only for a PDF on a browser without a PDF viewer of its own.
-const LAZY = ['editor.js', 'dockview.js', 'pdf.js', 'pdf.worker.js'];
+// vendor/dockview.js (0.4 MB) only on a wide screen with a mouse, which a phone never has, pdf.js (1.7 MB) only
+// for a PDF on a browser without a PDF viewer of its own, and Monaco (3.8 MB) only when a document opens in it.
+const LAZY = ['editor.js', 'dockview.js', 'pdf.js', 'pdf.worker.js', 'monaco.js', 'monaco.worker.js'];
 const vendor = readdirSync(`${ROOT}/vendor`).filter(name => name.endsWith('.js') && !LAZY.includes(name)).map(name => `vendor/${name}`);
 const wanted = [...walk('app'), ...vendor, 'app/ui/styles.css', './'];
 const missing = wanted.filter(file => !shell.includes(file));

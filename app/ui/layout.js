@@ -1,4 +1,4 @@
-import { h, icon } from './dom.js';
+import { h, icon, loadStylesheet } from './dom.js';
 import { readJSON, writeJSON } from '../util.js';
 
 const LAYOUT_KEY = 'peerkit.layout';
@@ -22,23 +22,6 @@ export function loadDock() {
 			throw err;
 		});
 	return loading;
-}
-
-function loadStylesheet(href) {
-	return new Promise(resolve => {
-		const link = h('link', { rel: 'stylesheet', href });
-		// Without it the panels still work, only unstyled, so a stylesheet that never answers doesn't hold them up.
-		const timer = setTimeout(resolve, 3000);
-		link.addEventListener('load', () => {
-			clearTimeout(timer);
-			resolve();
-		});
-		link.addEventListener('error', () => {
-			clearTimeout(timer);
-			resolve();
-		});
-		document.head.append(link);
-	});
 }
 
 /**

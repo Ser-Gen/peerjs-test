@@ -89,6 +89,24 @@ export function toast(message) {
 	setTimeout(() => el.remove(), 2500);
 }
 
+/** Add a stylesheet to the page; resolves when it has loaded or failed, or after 3 s. */
+export function loadStylesheet(href) {
+	return new Promise(resolve => {
+		const link = h('link', { rel: 'stylesheet', href });
+		// Without it the page still works, only unstyled, so a stylesheet that never answers doesn't hold anything up.
+		const timer = setTimeout(resolve, 3000);
+		link.addEventListener('load', () => {
+			clearTimeout(timer);
+			resolve();
+		});
+		link.addEventListener('error', () => {
+			clearTimeout(timer);
+			resolve();
+		});
+		document.head.append(link);
+	});
+}
+
 /** Show a modal <dialog>. Esc and the Android back gesture close it; it is removed however it closes. */
 export function openDialog(content) {
 	const dialog = h('dialog', { class: 'sheet' }, content);

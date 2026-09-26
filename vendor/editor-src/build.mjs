@@ -25,19 +25,22 @@ function contents(metafile) {
 	});
 }
 
-async function bundle({ entry, outfile, title, plugins = [] }) {
-	const options = { entryPoints: [entry], bundle: true, format: 'esm', target: 'es2020', plugins, logLevel: 'error' };
-	const { metafile } = await build({ ...options, write: false, metafile: true });
+async function bundle({ entry, outfile, title, plugins = [], format = 'esm', loader = {} }) {
+	const options = { entryPoints: [entry], bundle: true, format, target: 'es2020', plugins, loader, logLevel: 'error' };
+	const { metafile } = await build({ ...options, outfile, write: false, metafile: true });
 	const list = contents(metafile);
 	await build({
 		...options,
 		outfile,
 		minify: true,
 		legalComments: 'eof',
-		banner: { js: `/*\n * ${title}, built from vendor/editor-src (see vendor/README.md). Contains:\n * ${list.join('\n * ')}\n */` },
+		banner: Object.fromEntries(['js', 'css'].map(kind => [kind, `/*\n * ${title}, built from vendor/editor-src (see vendor/README.md). Contains:\n * ${list.join('\n * ')}\n */`])),
 	});
 	console.log(`built ${outfile} from ${list.length} packages`);
 }
 
 await bundle({ entry: 'yjs-entry.js', outfile: '../yjs.js', title: 'PeerKit shared data bundle (Yjs)' });
 await bundle({ entry: 'entry.js', outfile: '../editor.js', title: 'PeerKit shared editor bundle; Yjs comes from ./yjs.js', plugins: [yjsOutside] });
+// Monaco's stylesheet comes out next to it as ../monaco.css, with its icon font inside.
+await bundle({ entry: 'monaco-entry.js', outfile: '../monaco.js', title: 'PeerKit Monaco bundle (the Editor with Monaco chosen)', loader: { '.ttf': 'dataurl' } });
+await bundle({ entry: 'monaco-worker-entry.js', outfile: '../monaco.worker.js', title: 'PeerKit Monaco editor worker', format: 'iife' });

@@ -8,6 +8,7 @@ Third-party code, committed as ready-to-load files so the app itself has no buil
 | `qrcode.js` | QRCode.js by davidshimjs, defines `window.QRCode` | — | MIT |
 | `yjs.js` | Shared data bundle (ES module): Yjs, y-protocols, y-indexeddb. The chat's room document and the editor use this one copy | pinned in `editor-src/package.json` | MIT; the comment at the top lists every bundled package with its version and licence |
 | `editor.js` | Shared editor bundle (ES module): CodeMirror 6, y-codemirror.next, VS Code keymap. It imports Yjs from `yjs.js` | pinned in `editor-src/package.json` | MIT; listed the same way |
+| `monaco.js`, `monaco.css`, `monaco.worker.js` | Monaco, the editor of VS Code, for the Editor when it is chosen in Settings (ES module; its stylesheet; its editor worker, a classic script). No Yjs in it | `monaco-editor` 0.56.0, pinned in `editor-src/package.json` | MIT; listed the same way (its `marked` and `dompurify` are inside the package) |
 | `dockview.js`, `dockview.css` | dockview-core, the desktop layout's panels (ES module; its stylesheet) | 8.2.0 | MIT (`dockview.LICENCE.md`) |
 | `pdf.js`, `pdf.worker.js` | pdf.js (`pdfjs-dist`), the chat's PDF viewer where the browser has none (Android Chrome); its legacy build | 6.3.289 | Apache-2.0 (`pdf.LICENSE`) |
 | `words.js` | BIP-39 English word list (2048 words) for room codes, as an ES module | from `@scure/bip39` 2.3.0 | MIT (header in the file) |
@@ -16,14 +17,18 @@ Third-party code, committed as ready-to-load files so the app itself has no buil
 
 Generated once from `wordlists/english.js` of `@scure/bip39` 2.3.0 (npm pack, not installed). The list must stay exactly as it is: room codes and the IDs derived from them depend on it, so changing a word breaks existing rooms.
 
-## yjs.js and editor.js
+## yjs.js, editor.js and monaco.js
 
-Both are built once with esbuild from the pinned npm versions in `editor-src/`.
+All are built once with esbuild from the pinned npm versions in `editor-src/`.
 
 - `yjs.js` (0.1 MB) is Yjs and its sync, awareness and IndexedDB helpers (`editor-src/yjs-entry.js`). `app/roomdoc.js` loads it as soon as a room opens, for the chat, so the service worker caches it with the app.
 - `editor.js` (0.7 MB) is CodeMirror and the Yjs binding for it (`editor-src/entry.js`). `app/tools/editor/editor.js` loads it with `import()` the first time the Editor is needed (the chat's viewer does too, for text files), so other tools never download it.
 - Yjs breaks if two copies are loaded, so `editor.js` carries none: `build.mjs` leaves `yjs` and `./yjs.js` as imports of `./yjs.js` next to it, and `editor.js` passes on the `Y`, `syncProtocol`, `awarenessProtocol`, `encoding`, `decoding` and `IndexeddbPersistence` it gets from there. `@codemirror/state` breaks the same way, so all of CodeMirror is in the one file. Its other shared helpers (a few `lib0` modules) are stateless and are in both. `node test/run.mjs vendor` checks that the two files share one Yjs.
 - To use another CodeMirror extension or language, export it in `editor-src/entry.js` and rebuild.
+- `monaco.js` (3.5 MB, 0.9 MB compressed) is Monaco (`editor-src/monaco-entry.js`): the editor, most of its features and the Monarch highlighting of the Editor's languages, plus a few rules of our own for JSON (its highlighting otherwise comes with its language service). Left out are the language services (TypeScript, CSS, HTML, JSON: megabytes of workers, and they would need their own) and the features that only work with one or have no use here; the entry lists them. `app/tools/editor/monaco-view.js` loads it with `import()` only when a document opens in Monaco, so phones (CodeMirror by default) never fetch it.
+- `monaco.css` comes out of the same build: Monaco's modules import their stylesheets, and esbuild gathers them next to the bundle. The icon font (codicons) is inside it as a `data:` URL, so there is no font file to serve.
+- `monaco.worker.js` is Monaco's editor worker (`editor-src/monaco-worker-entry.js`: word suggestions, links, diffs), built as a classic script because Firefox started module workers late. `monaco.js` starts it from `new URL('./monaco.worker.js', import.meta.url)` in `MonacoEnvironment.getWorker`.
+- Monaco has no Yjs binding in it: `y-monaco` uses another awareness field than `y-codemirror.next`, so the two editors wouldn't see each other's cursors, and it has no undo that leaves the others' edits alone. `app/tools/editor/monaco-binding.js` is PeerKit's own.
 - `editor-src/build.mjs` writes into each banner the packages that ended up in that file (from esbuild's list of inputs, with the versions from the lock file).
 - `editor-src/package.json` pins every direct dependency; `package-lock.json` pins the rest.
 
@@ -34,11 +39,11 @@ Needs Node.js 18+ and npm:
 ```sh
 cd vendor/editor-src
 npm ci
-npm run build      # writes vendor/yjs.js and vendor/editor.js
+npm run build      # writes vendor/yjs.js, editor.js, monaco.js, monaco.css and monaco.worker.js
 rm -rf node_modules
 ```
 
-The build is reproducible: the same lock file gives the same two files byte for byte.
+The build is reproducible: the same lock file gives the same files byte for byte.
 
 Check that there's only one copy of the shared packages; every line should say `deduped` except the first of each:
 
@@ -50,7 +55,8 @@ npm ls --all yjs lib0 @codemirror/state @codemirror/view
 
 1. Change the versions in `editor-src/package.json` and run `npm install` to update the lock file.
 2. The versions were chosen to be at least 21 days old (the npm setting `min-release-age=21`). Keep that rule for new versions.
-3. Rebuild, then check in the app: the chat on two devices, typing on both devices, remote cursors, undo, search, language highlighting and the dark theme. Run `node test/run.mjs vendor editor chat`.
+3. Rebuild, then check in the app: the chat on two devices, typing on both devices, remote cursors, undo, search, language highlighting and the dark theme, in CodeMirror and in Monaco (Settings → Editor), and one device in each. Run `node test/run.mjs vendor editor monaco chat`.
+4. Monaco's ESM entry points change between versions (0.56 split them into `editor`, `features/*/register` and `languages/definitions/*/register`); read its CHANGELOG before moving on from 0.56.0.
 
 ## dockview.js and dockview.css
 

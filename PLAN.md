@@ -962,6 +962,27 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 - [ ] Two phones join voice for the first time on that phone (the permission prompt appears): if it says "connecting…", it sorts itself out within about 15 s without leaving voice.
 - [ ] Draw on the whiteboard with the mouse while a phone watches, several times: every line stays on both screens.
 
+### Monaco in the Editor (2026-09-26, 0.13.3)
+
+**Why:** people know Monaco, the editor of VS Code, much better than CodeMirror, but Monaco is awkward on a phone. So there is a choice.
+
+**As built**
+- Settings → Editor: **Automatic** (Monaco with a mouse, CodeMirror on a touch screen; the default), **Monaco** or **CodeMirror**. It is a setting of this device (`peerkit.editor`, `engine`), and changing it moves the open document to the other editor at once, with its cursor and undo history.
+- Members with different editors are in the same documents and see each other's cursors and names: Monaco's binding (`app/tools/editor/monaco-binding.js`, PeerKit's own) uses the awareness field of CodeMirror's. `y-monaco` wasn't used: it has another field and an undo that would take back the others' edits.
+- Undo in Monaco is the document's shared-editing undo (only this device's edits), as in CodeMirror; Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y are bound to it. The toolbar keys on a phone, Search, the document options (language, text size, wrapping) work with both.
+- Monaco is vendored: `vendor/monaco.js` (3.5 MB, 0.9 MB compressed), `monaco.css` and `monaco.worker.js`, built from `monaco-editor` 0.56.0 in `vendor/editor-src` (the newest version at least 21 days old). Syntax colouring for every language of the Editor, word suggestions, find and replace, multiple cursors, folding, the command palette (F1). No language services (TypeScript errors and IntelliSense, CSS, HTML, JSON checks): they are megabytes more and would need a worker each. The minimap is off, since the Editor is often a narrow panel.
+- A device loads only the editor it uses, the first time a document opens in it; the service worker caches it then. The data itself now needs only `vendor/yjs.js`, so a device that shows documents in Monaco never fetches CodeMirror (the chat's viewer still uses CodeMirror for code).
+- Monaco takes its colours from the app's, light and dark.
+- Tests: a new jsdom test, `monaco` (38 checks): a member in Monaco and one in CodeMirror typing at once, multi-line edits, undo and redo that leave the other's edits alone (Ctrl+Z included, after a switch, where Monaco's own undo would have nothing), cursors and names both ways, a hostile name and colour, a forged cursor, the document options, switching editors and back, offline edits merging. The vendor test checks the Monaco bundle (no Yjs in it, a classic worker, the icon font inside the stylesheet). 456 checks in all.
+
+**Checklist**
+- [ ] On a laptop, the Editor opens documents in Monaco; on a phone, in CodeMirror.
+- [ ] A laptop in Monaco and a phone in CodeMirror type in one document at once: the text stays the same on both, and each sees the other's cursor and name.
+- [ ] Ctrl+Z in Monaco takes back only your own typing, not what the phone typed.
+- [ ] Settings → Editor → CodeMirror, then back to Monaco: the open document stays open, where the cursor was.
+- [ ] Monaco in the dark theme, and in a narrow side panel: the find widget and suggestions aren't cut off.
+- [ ] Choose Monaco on a phone: it works, if less comfortably.
+
 ## Backlog (to triage)
 
 Ideas raised on 2026-09-23 and not yet scheduled into a slice. Size is a rough guess: **S** about half a day, **M** a day or two, **L** a slice of its own.

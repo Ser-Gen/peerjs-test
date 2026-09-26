@@ -1,19 +1,18 @@
 import { cleanName, device } from '../../device.js';
 import { CH } from '../../protocol.js';
 import { button, h, icon, openDialog, toast } from '../../ui/dom.js';
-import { copyText, formatBytes, indexedDBUsable, randomId, readJSON, sleep, writeJSON } from '../../util.js';
-import { LANGS, codeTheme, darkScheme, highlighting, langOf, languageSupport } from '../../ui/code.js';
+import { copyText, formatBytes, indexedDBUsable, randomId, sleep } from '../../util.js';
+import { LANGS, darkScheme, langOf } from '../../ui/code.js';
 import { DocProvider } from '../../docsync.js';
+import { FONT_SIZES, editorPrefs } from './prefs.js';
+import { CodeMirrorView, loadCodeMirror } from './cm-view.js';
+import { MonacoView, loadMonaco } from './monaco-view.js';
 
-const PREFS_KEY = 'peerkit.editor';
-const PREFS_VERSION = 1;
-const MAX_LAST = 20; // rooms whose last open document is remembered
 const STORAGE_WAIT = 4000; // blocked IndexedDB never answers; sync with the others anyway
 const SYNC_WAIT = 5000; // a member whose editor doesn't answer doesn't hold up the empty state
 const MAX_QUEUED = 5000; // messages kept while the editor bundle loads
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_NAME = 80;
-const FONT_SIZES = { small: 13, medium: 15, large: 18 };
 const SIZE_LABELS = { small: 'Small', medium: 'Medium', large: 'Large' };
 const FALLBACK_COLOR = '#0c8599';
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
@@ -22,7 +21,10 @@ const COLOR_RE = /^#[0-9a-f]{6}$/i;
  * Data (one Y.Doc per room, synced by app/docsync.js and kept in IndexedDB as `peerkit.doc:<room ID>`):
  *   map 'docs': id → Y.Map { name: string, lang: key of LANGS, created: ms, text: Y.Text }
  * Deleting a document deletes its Y.Map, so a rename racing a delete can't bring it back half-empty.
- * Awareness state: { user: {name, color, colorLight}, doc: open document id | null, cursor } (cursor: y-codemirror.next).
+ * Awareness state: { user: {name, color, colorLight}, doc: open document id | null, cursor } (cursor: y-codemirror.next's
+ * field, which monaco-binding.js uses too).
+ * The data needs only vendor/yjs.js. A document is shown in CodeMirror (cm-view.js) or Monaco (monaco-view.js), as chosen
+ * in Settings (prefs.js); each is loaded the first time a document opens in it.
  */
 
 export default {
@@ -44,16 +46,6 @@ function fileName({ name, lang }) {
 	return /\.[a-z0-9]{1,8}$/i.test(base) ? base : `${base}.${LANGS[lang].ext}`;
 }
 
-function loadPrefs() {
-	const raw = readJSON(PREFS_KEY);
-	const ok = raw?.version === PREFS_VERSION;
-	return {
-		wrap: ok ? raw.wrap !== false : true,
-		font: ok && Object.hasOwn(FONT_SIZES, raw.font) ? raw.font : 'medium',
-		last: ok && raw.last && typeof raw.last === 'object' && !Array.isArray(raw.last) ? raw.last : {},
-	};
-}
-
 function iconButton(name, label, onclick, className = 'icon-btn') {
 	return h('button', { type: 'button', class: className, title: label, 'aria-label': label, onclick }, icon(name));
 }
@@ -72,16 +64,18 @@ class EditorTool {
 	constructor(root, room, ctx) {
 		this.room = room;
 		this.ctx = ctx;
-		this.prefs = loadPrefs();
-		this.lib = null;
+		this.lib = null; // vendor/yjs.js
+		this.engine = null; // { kind: 'codemirror' | 'monaco', lib } that documents are shown with
+		this.engineLoading = null; // { kind, promise }
+		this.wanted = null; // the document to open once the engine has loaded
+		this.wantFocus = false;
 		this.loading = null;
 		this.loadError = null;
 		this.destroyed = false;
 		this.queued = []; // doc messages that arrived before the bundle
 		this.doc = this.docs = this.awareness = this.persistence = this.provider = null;
-		this.view = null;
+		this.view = null; // a CodeMirrorView or MonacoView
 		this.current = null; // { id, name, lang, entry, text } of the open document
-		this.compartments = null;
 		this.undoManagers = new Map(); // per document, so undo history survives switching
 		this.selections = new Map(); // per document, to come back to the same place
 		this.sheet = null; // { dialog, render } of the open documents list
@@ -108,10 +102,10 @@ class EditorTool {
 		this.keys = h('div', { class: 'editor-keys', role: 'toolbar', 'aria-label': 'Editing keys' },
 			keyButton('undo', 'Undo', () => this.undoManager()?.undo()),
 			keyButton('redo', 'Redo', () => this.undoManager()?.redo()),
-			keyButton('outdent', 'Outdent', () => this.view && this.lib.indentLess(this.view)),
-			keyButton('indent', 'Indent', () => this.view && this.lib.indentMore(this.view)),
+			keyButton('outdent', 'Outdent', () => this.view?.outdent()),
+			keyButton('indent', 'Indent', () => this.view?.indent()),
 			keyButton('search', 'Search', () => this.toggleSearch()),
-			h('button', { type: 'button', class: 'btn small ghost', onpointerdown: e => e.preventDefault(), onclick: () => this.view?.contentDOM.blur() }, 'Done'));
+			h('button', { type: 'button', class: 'btn small ghost', onpointerdown: e => e.preventDefault(), onclick: () => this.view?.blur() }, 'Done'));
 		this.el = h('div', { class: 'editor' },
 			this.fileInput,
 			h('div', { class: 'editor-bar' }, this.docButton, this.presence, this.searchBtn, this.moreBtn),
@@ -125,7 +119,7 @@ class EditorTool {
 			if (!this.host.contains(e.relatedTarget)) this.setFocused(false);
 		});
 		this.darkQuery = matchMedia('(prefers-color-scheme: dark)');
-		this.onScheme = () => this.view?.dispatch({ effects: this.compartments.theme.reconfigure(highlighting(this.lib, darkScheme())) });
+		this.onScheme = () => this.view?.setDark(darkScheme());
 		this.darkQuery.addEventListener('change', this.onScheme);
 
 		this.unsubscribe = [
@@ -133,6 +127,9 @@ class EditorTool {
 			room.on(`msg:${CH.DOC}`, (msg, member) => this.onEarlyMessage(msg, member)),
 			ctx.onShow(() => this.load()),
 			room.on('members', () => this.render()),
+			editorPrefs.on('change', patch => {
+				if ('engine' in patch) this.switchEngine();
+			}),
 			// "Open as shared document" from the chat's file viewer.
 			ctx.onHandOff?.(file => this.load().then(() => this.openFile(file))) ?? (() => {}),
 		];
@@ -174,10 +171,18 @@ class EditorTool {
 		return this.loading;
 	}
 
+	retry() {
+		this.loadError = null;
+		this.render();
+		this.load().then(() => {
+			if (this.provider && !this.view) this.openInitial();
+		});
+	}
+
 	async open() {
 		this.loadError = null;
 		this.render();
-		const lib = await import('../../../vendor/editor.js');
+		const lib = await import('../../../vendor/yjs.js');
 		if (this.destroyed) return;
 		const doc = new lib.Y.Doc();
 		let persistence = null;
@@ -250,7 +255,7 @@ class EditorTool {
 	/** The remembered document for this room, or the first one. */
 	openInitial() {
 		const list = this.list();
-		const target = list.find(item => item.id === this.prefs.last[this.ctx.room]) ?? list[0];
+		const target = list.find(item => item.id === editorPrefs.last[this.ctx.room]) ?? list[0];
 		if (target) this.openDoc(target.id);
 		else this.render();
 	}
@@ -268,7 +273,7 @@ class EditorTool {
 				if (transaction.origin?.provider === this.provider) toast(`${from?.name ?? 'Someone'} deleted “${current.name}”`);
 				this.openInitial();
 			} else {
-				if (fresh.lang !== current.lang) this.view.dispatch({ effects: this.compartments.lang.reconfigure(this.languageExtensions(fresh.lang)) });
+				if (fresh.lang !== current.lang) this.view.setLang(fresh.lang);
 				this.current = fresh;
 			}
 		} else {
@@ -281,7 +286,7 @@ class EditorTool {
 	createDoc({ name = '', lang = 'text', content = '' } = {}) {
 		const { Y } = this.lib;
 		const id = randomId(8);
-		this.rememberLast(id); // the change observer opens it
+		editorPrefs.rememberLast(this.ctx.room, id); // the change observer opens it
 		this.doc.transact(() => {
 			const entry = new Y.Map();
 			this.docs.set(id, entry);
@@ -292,8 +297,7 @@ class EditorTool {
 			entry.set('text', text);
 			if (content) text.insert(0, content);
 		});
-		this.openDoc(id);
-		if (!coarse()) this.view?.focus();
+		this.openDoc(id, { focus: !coarse() });
 	}
 
 	untitledName() {
@@ -320,7 +324,7 @@ class EditorTool {
 			toast('This is not a text file');
 			return;
 		}
-		// CodeMirror counts a line break as one character; a CRLF in the Y.Text would shift every position after it.
+		// The editors count a line break as one character; a CRLF in the Y.Text would shift every position after it.
 		this.createDoc({ name: file.name, lang: langOf(file.name), content: content.replace(/\r\n?/g, '\n') });
 	}
 
@@ -351,33 +355,78 @@ class EditorTool {
 
 	// --- the editor view ---
 
-	openDoc(id) {
+	/** Shows a document, once the chosen editor has loaded. */
+	openDoc(id, { focus = false } = {}) {
 		if (this.current?.id === id && this.view) return;
 		const item = this.readEntry(id);
 		if (!item) return;
+		const kind = editorPrefs.resolved;
+		if (this.engine?.kind !== kind) {
+			this.wanted = id;
+			this.wantFocus ||= focus;
+			this.loadEngine(kind);
+			return;
+		}
+		this.wanted = null;
 		this.closeView();
-		const { lib } = this;
+		const { Y } = this.lib;
 		let undoManager = this.undoManagers.get(id);
-		if (!undoManager) this.undoManagers.set(id, (undoManager = new lib.Y.UndoManager(item.text)));
-		this.compartments = { theme: new lib.Compartment(), wrap: new lib.Compartment(), lang: new lib.Compartment() };
-		const saved = this.selections.get(id);
-		const length = item.text.length;
-		const selection = saved ? lib.EditorSelection.single(Math.min(saved.anchor, length), Math.min(saved.head, length)) : undefined;
-		this.view = new lib.EditorView({
-			parent: this.host,
-			state: lib.EditorState.create({ doc: item.text.toString(), selection, extensions: this.extensions(item, undoManager) }),
-		});
-		if (selection) this.view.dispatch({ effects: lib.EditorView.scrollIntoView(selection.main.head, { y: 'center' }) });
+		if (!undoManager) this.undoManagers.set(id, (undoManager = new Y.UndoManager(item.text)));
+		const options = {
+			Y,
+			host: this.host,
+			text: item.text,
+			lang: item.lang,
+			awareness: this.awareness,
+			undoManager,
+			selection: this.selections.get(id),
+			wrap: editorPrefs.wrap,
+			fontSize: FONT_SIZES[editorPrefs.font],
+			dark: darkScheme(),
+		};
 		this.current = item;
+		this.host.hidden = false; // shown before the view measures it
+		this.view = kind === 'monaco' ? new MonacoView(this.engine.lib, options) : new CodeMirrorView(this.engine.lib, options);
 		this.awareness.setLocalStateField('doc', id);
-		this.rememberLast(id);
+		editorPrefs.rememberLast(this.ctx.room, id);
 		this.render();
+		if (focus || this.wantFocus) this.view.focus();
+		this.wantFocus = false;
+	}
+
+	/** Loads CodeMirror or Monaco, then opens the document that waited for it. */
+	loadEngine(kind) {
+		if (this.engineLoading?.kind === kind) return;
+		const promise = (kind === 'monaco' ? loadMonaco() : loadCodeMirror()).then(lib => {
+			if (this.engineLoading?.promise !== promise || this.destroyed) return;
+			this.engineLoading = null;
+			this.engine = { kind, lib };
+			if (this.wanted) this.openDoc(this.wanted);
+			else this.render();
+		}, err => {
+			if (this.engineLoading?.promise !== promise) return;
+			console.warn(`[peerkit] ${kind} failed to load`, err);
+			this.engineLoading = null;
+			this.loadError = err;
+			this.render();
+		});
+		this.engineLoading = { kind, promise };
+		this.render();
+	}
+
+	/** Settings changed the editor: the open document moves to the other one, where it was. */
+	switchEngine() {
+		if (!this.provider || this.engine?.kind === editorPrefs.resolved) return;
+		const id = this.current?.id ?? this.wanted;
+		const focus = Boolean(this.view && this.focused);
+		this.closeView();
+		if (id) this.openDoc(id, { focus });
+		else this.render();
 	}
 
 	closeView() {
 		if (!this.view) return;
-		const { anchor, head } = this.view.state.selection.main;
-		this.selections.set(this.current.id, { anchor, head });
+		this.selections.set(this.current.id, this.view.selection());
 		this.view.destroy();
 		this.view = null;
 		this.current = null;
@@ -386,56 +435,12 @@ class EditorTool {
 		if (state) this.awareness.setLocalState({ ...state, cursor: null, doc: null });
 	}
 
-	extensions(item, undoManager) {
-		const { lib, compartments } = this;
-		return [
-			lib.lineNumbers(),
-			lib.highlightActiveLineGutter(),
-			lib.highlightSpecialChars(),
-			lib.foldGutter(),
-			lib.drawSelection(),
-			lib.dropCursor(),
-			lib.EditorState.allowMultipleSelections.of(true),
-			lib.indentOnInput(),
-			lib.bracketMatching(),
-			lib.closeBrackets(),
-			lib.rectangularSelection(),
-			lib.crosshairCursor(),
-			lib.highlightActiveLine(),
-			lib.highlightSelectionMatches(),
-			lib.search({ top: true }), // away from the on-screen keyboard
-			compartments.theme.of(highlighting(lib, darkScheme())),
-			compartments.wrap.of(this.prefs.wrap ? lib.EditorView.lineWrapping : []),
-			compartments.lang.of(this.languageExtensions(item.lang)),
-			// Collaborative undo instead of CodeMirror's history, which would also undo the others' edits.
-			lib.Prec.high(lib.keymap.of([...lib.yUndoManagerKeymap, ...lib.closeBracketsKeymap])),
-			lib.keymap.of([...lib.vscodeKeymap, lib.indentWithTab]),
-			lib.yCollab(item.text, this.awareness, { undoManager }),
-			codeTheme(lib),
-		];
-	}
-
-	languageExtensions(lang) {
-		// Autocorrect and swipe typing help prose; in code they mangle identifiers.
-		const attrs = LANGS[lang].prose
-			? { spellcheck: 'true', autocorrect: 'on', autocapitalize: 'sentences', writingsuggestions: 'true' }
-			: { spellcheck: 'false', autocorrect: 'off', autocapitalize: 'off' };
-		return [languageSupport(this.lib, lang), this.lib.EditorView.contentAttributes.of(attrs)];
-	}
-
 	undoManager() {
 		return this.current ? this.undoManagers.get(this.current.id) : null;
 	}
 
 	toggleSearch() {
-		const { view, lib } = this;
-		if (!view) return;
-		if (lib.searchPanelOpen(view.state)) {
-			lib.closeSearchPanel(view);
-			if (coarse()) view.contentDOM.blur();
-		} else {
-			lib.openSearchPanel(view);
-		}
+		if (this.view && !this.view.toggleSearch() && coarse()) this.view.blur();
 	}
 
 	setFocused(focused) {
@@ -446,31 +451,15 @@ class EditorTool {
 
 	// --- preferences ---
 
-	savePrefs(patch) {
-		this.prefs = { ...this.prefs, ...patch };
-		writeJSON(PREFS_KEY, { version: PREFS_VERSION, ...this.prefs });
-	}
-
-	rememberLast(id) {
-		const room = this.ctx.room;
-		if (this.prefs.last[room] === id) return;
-		const last = { ...this.prefs.last };
-		delete last[room]; // re-insert, so the oldest rooms are first to go
-		last[room] = id;
-		const rooms = Object.keys(last);
-		for (const old of rooms.slice(0, Math.max(0, rooms.length - MAX_LAST))) delete last[old];
-		this.savePrefs({ last });
-	}
-
 	setWrap(wrap) {
-		this.savePrefs({ wrap });
-		this.view?.dispatch({ effects: this.compartments.wrap.reconfigure(wrap ? this.lib.EditorView.lineWrapping : []) });
+		editorPrefs.set({ wrap });
+		this.view?.setWrap(wrap);
 	}
 
 	setFont(font) {
-		this.savePrefs({ font });
+		editorPrefs.set({ font });
 		this.render();
-		this.view?.requestMeasure();
+		this.view?.setFont(FONT_SIZES[font]);
 	}
 
 	// --- actions ---
@@ -503,7 +492,7 @@ class EditorTool {
 
 	render() {
 		const ready = Boolean(this.provider);
-		this.el.style.setProperty('--editor-font-size', `${FONT_SIZES[this.prefs.font]}px`);
+		this.el.style.setProperty('--editor-font-size', `${FONT_SIZES[editorPrefs.font]}px`);
 		this.host.hidden = !this.view;
 		this.keys.hidden = !this.view;
 		this.searchBtn.disabled = this.moreBtn.disabled = !this.view;
@@ -520,9 +509,9 @@ class EditorTool {
 			content = [
 				h('p', {}, 'Could not load the editor.'),
 				h('p', { class: 'hint' }, 'Check the internet connection and try again.'),
-				button('Try again', null, () => this.load(), 'btn primary'),
+				button('Try again', null, () => this.retry(), 'btn primary'),
 			];
-		} else if (!this.provider) {
+		} else if (!this.provider || (this.wanted && !this.view)) {
 			content = [spinner(), h('p', {}, 'Loading the editor…')];
 		} else if (!this.view && this.room.members.length && !this.provider.synced && !this.syncWaited) {
 			content = [spinner(), h('p', {}, 'Syncing with the room…')];
@@ -580,8 +569,7 @@ class EditorTool {
 					'aria-current': String(item.id === this.current?.id),
 					onclick: () => {
 						dialog.close();
-						this.openDoc(item.id);
-						if (!coarse()) this.view?.focus();
+						this.openDoc(item.id, { focus: !coarse() });
 					},
 				},
 				h('span', { class: 'doc-item-name' }, item.name),
@@ -633,14 +621,14 @@ class EditorTool {
 		const sizes = Object.keys(FONT_SIZES).map(size => h('button', {
 			type: 'button',
 			class: 'segment',
-			'aria-pressed': String(size === this.prefs.font),
+			'aria-pressed': String(size === editorPrefs.font),
 			onclick: () => {
 				this.setFont(size);
 				sizes.forEach(el => el.setAttribute('aria-pressed', String(el === sizeButton(size))));
 			},
 		}, SIZE_LABELS[size]));
 		const sizeButton = size => sizes[Object.keys(FONT_SIZES).indexOf(size)];
-		const wrap = h('input', { type: 'checkbox', checked: this.prefs.wrap, onchange: () => this.setWrap(wrap.checked) });
+		const wrap = h('input', { type: 'checkbox', checked: editorPrefs.wrap, onchange: () => this.setWrap(wrap.checked) });
 		const dialog = openDialog(h('div', { class: 'sheet-body' },
 			h('h2', {}, 'Document'),
 			h('label', { class: 'field' }, h('span', {}, 'Name'), name),

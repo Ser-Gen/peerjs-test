@@ -1611,6 +1611,22 @@ progress::-moz-progress-bar {
 .editor-host {
 	flex: 1;
 	min-height: 0;
+	overflow: hidden; /* Monaco sizes itself to it */
+}
+
+/* Monaco: another member's cursor and name (monaco-binding.js writes each member's colour as a rule of its own). */
+.editor-host .peerkit-yhead {
+	margin-left: -1px;
+	border-left: 2px solid;
+}
+
+.editor-host .peerkit-yname {
+	padding: 0 0.3em;
+	border-radius: 4px 4px 4px 0;
+	color: #fff;
+	font: 0.7rem/1.5 system-ui, sans-serif;
+	white-space: nowrap;
+	pointer-events: none;
 }
 
 .editor-message {

@@ -6,7 +6,7 @@
  * It is a classic worker, not a module, because Firefox still has no module workers.
  * VERSION must match APP_VERSION in app/version.js and SHELL must list the app's files; test/pwa-test.mjs checks both.
  */
-const VERSION = '0.13.2';
+const VERSION = '0.13.3';
 const CACHE = `peerkit-${VERSION}`;
 const SHARE_CACHE = 'peerkit-share'; // read and emptied by app/share.js; the names below are shared with it
 const SHARE_INDEX = 'share-index';
@@ -17,7 +17,8 @@ const MAX_SHARE_BYTES = 2 * 1024 * 1024 * 1024; // one share; bigger than this i
 // is loaded when the Editor tab is first opened (or a text file in the viewer) and cached then, so an offline device
 // that never opened the editor doesn't pay for it. vendor/dockview.js and .css (0.5 MB) likewise: only a wide screen
 // with a mouse loads them, never a phone. vendor/pdf.js and pdf.worker.js (1.7 MB): only a PDF opened on a browser
-// without a PDF viewer of its own (Android Chrome).
+// without a PDF viewer of its own (Android Chrome). vendor/monaco.js, .css and monaco.worker.js (3.8 MB): only when a
+// document opens in Monaco (Settings → Editor; automatically with a mouse).
 const SHELL = [
 	'./',
 	'manifest.webmanifest',
@@ -49,7 +50,11 @@ const SHELL = [
 	'app/tools/chat/timeline.js',
 	'app/tools/chat/transfers.js',
 	'app/tools/chat/viewer.js',
+	'app/tools/editor/cm-view.js',
 	'app/tools/editor/editor.js',
+	'app/tools/editor/monaco-binding.js',
+	'app/tools/editor/monaco-view.js',
+	'app/tools/editor/prefs.js',
 	'app/tools/whiteboard/boards.js',
 	'app/tools/whiteboard/canvas.js',
 	'app/tools/whiteboard/images.js',

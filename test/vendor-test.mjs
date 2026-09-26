@@ -1,5 +1,6 @@
-// The vendored bundles load and fit together: one Yjs for the chat and the editor, and pdf.js reading a PDF.
+// The vendored bundles load and fit together: one Yjs for the chat and the editor, Monaco without one, and pdf.js reading a PDF.
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 
 globalThis.window = globalThis;
 const ROOT = new URL('../', import.meta.url).pathname.replace(/\/$/, ''); // the repo root
@@ -23,6 +24,20 @@ doc.getText('t').insert(0, 'hi');
 const copy = new editor.Y.Doc();
 editor.Y.applyUpdate(copy, yjs.Y.encodeStateAsUpdate(doc));
 check('a document made with one reads with the other', copy.getText('t').toString() === 'hi');
+
+// --- vendor/monaco.js, .css and monaco.worker.js: the Editor in Monaco ---
+
+const monacoJs = readFileSync(`${ROOT}/vendor/monaco.js`, 'utf8');
+check('the Monaco bundle carries no Yjs (monaco-binding.js uses the one of vendor/yjs.js)', !monacoJs.includes(twice) && !monacoJs.includes('./yjs.js'));
+check('and starts its worker from monaco.worker.js next to it', monacoJs.includes('"./monaco.worker.js"'));
+let classic = true;
+try {
+	new vm.Script(readFileSync(`${ROOT}/vendor/monaco.worker.js`, 'utf8'));
+} catch {
+	classic = false;
+}
+check('the worker is a classic script, which every browser starts', classic);
+check('the stylesheet carries its icon font', /@font-face[^}]*url\(data:font\/ttf;base64,/.test(readFileSync(`${ROOT}/vendor/monaco.css`, 'utf8')));
 
 // --- pdf.js: the PDF viewer where the browser has none ---
 
