@@ -4,7 +4,7 @@ import { PUBLIC_PROFILE, isPublic, peerOptions, profiles, sameConnection } from 
 import { IceConfig } from './turn.js';
 import { dropShare, peekShare, takeShare } from './share.js';
 import { registerServiceWorker } from './pwa.js';
-import { Voice } from './voice.js';
+import { MAX_VOLUME, Voice } from './voice.js';
 import { button, h, icon, openDialog, toast } from './ui/dom.js';
 import { ToolLayout, WIDE, loadDock } from './ui/layout.js';
 import { renderQR } from './ui/qr.js';
@@ -392,7 +392,9 @@ function showVoiceSheet() {
 		h('h2', {}, 'Voice'),
 		list,
 		mics,
-		h('p', { class: 'hint' }, 'Volume and mute are for this device: the others still hear that person.'),
+		h('p', { class: 'hint' }, voice.canBoost
+			? 'Volume and mute are for this device: the others still hear that person. Past 100 % the voice is boosted, best with headphones.'
+			: 'Volume and mute are for this device: the others still hear that person.'),
 		h('div', { class: 'actions end' }, button('Done', null, () => dialog.close(), 'btn ghost'))));
 
 	// Redrawn whenever someone starts or stops speaking, so each row is made once and then updated: a slider
@@ -405,13 +407,15 @@ function showVoiceSheet() {
 			type: 'button',
 			onclick: () => voice.setPeerMuted(row.peer.deviceId, !voice.mutedFor(row.peer.deviceId)),
 		});
+		row.percent = h('small', { class: 'voice-percent' });
 		row.slider = h('input', {
 			type: 'range',
 			min: '0',
-			max: '100',
+			max: String(voice.canBoost ? MAX_VOLUME * 100 : 100),
+			step: '5',
 			oninput: e => voice.setVolume(row.peer.deviceId, Number(e.target.value) / 100),
 		});
-		row.li = h('li', { class: 'voice-row' }, row.name, row.mute, row.slider);
+		row.li = h('li', { class: 'voice-row' }, row.name, row.mute, row.percent, row.slider);
 		return row;
 	};
 	const updateRow = (row, peer) => {
@@ -427,8 +431,10 @@ function showVoiceSheet() {
 		row.mute.setAttribute('aria-pressed', String(off));
 		row.slider.setAttribute('aria-label', `Volume for ${peer.name}`);
 		row.slider.disabled = off;
-		const value = String(Math.round(voice.volumeOf(peer.deviceId) * 100));
-		if (row.slider.value !== value) row.slider.value = value;
+		const percent = Math.round(voice.volumeOf(peer.deviceId) * 100);
+		if (row.slider.value !== String(percent)) row.slider.value = String(percent);
+		setText(row.percent, `${Math.min(percent, Number(row.slider.max))}%`);
+		row.percent.classList.toggle('boosted', percent > 100);
 	};
 	const renderList = () => {
 		const others = voice.others;

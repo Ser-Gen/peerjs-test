@@ -48,6 +48,7 @@ globalThis.MediaStream = FakeMediaStream;
 // --- fake Web Audio: enough to read a level from a stream ---
 const loud = new Set(); // the tracks that are speaking right now
 const taps = []; // every stream handed to the AudioContext
+const gains = []; // every gain node made for a boost: { value, connected }
 const levelOf = stream => ((stream?.getTracks() ?? []).some(track => loud.has(track.origin ?? track)) ? 0.2 : 0);
 globalThis.AudioContext = class {
 	constructor() {
@@ -55,8 +56,17 @@ globalThis.AudioContext = class {
 	}
 	createMediaStreamSource(stream) {
 		taps.push(stream);
-		return { connect: analyser => (analyser.stream = stream), disconnect() {} };
+		return { connect: node => (node.stream = stream), disconnect() {} };
 	}
+	createGain() {
+		const node = { gain: { value: 1 }, connect() { gains.push(node); node.connected = true; }, disconnect() { node.connected = false; } };
+		return node;
+	}
+	createDynamicsCompressor() {
+		const param = () => ({ value: 0 });
+		return { threshold: param(), knee: param(), ratio: param(), attack: param(), release: param(), connect() {}, disconnect() {} };
+	}
+	destination = {};
 	createAnalyser() {
 		return {
 			fftSize: 512,
@@ -223,6 +233,26 @@ b.voice.setPeerMuted(a.room.self.deviceId, true);
 check('volume and a local mute reach the audio element', peerOf(b, a).audio.volume === 0.4 && peerOf(b, a).audio.muted === true);
 check('and are remembered for that device', JSON.parse(store.get('peerkit.voice')).peers['dev-Laptop'].volume === 0.4);
 b.voice.setPeerMuted(a.room.self.deviceId, false);
+
+// Past 100 %: the element goes silent and the sound plays through a gain node instead.
+const heard = peerOf(b, a);
+b.voice.setVolume(a.room.self.deviceId, 1.5);
+const boost = heard.boost?.gain;
+check('turned up to 150 %, the sound plays through a gain of 1.5 and the element is silenced',
+	boost?.gain.value === 1.5 && boost.connected && heard.audio.muted === true && heard.audio.volume === 1);
+b.voice.setVolume(a.room.self.deviceId, 2);
+check('200 % is the most: the same node, gain 2', heard.boost?.gain === boost && boost.gain.value === 2);
+b.voice.setVolume(a.room.self.deviceId, 5);
+check('and more than that is cut to 200 % (a stored value is untrusted too)',
+	b.voice.volumeOf(a.room.self.deviceId) === 2);
+b.voice.setPeerMuted(a.room.self.deviceId, true);
+check('a local mute silences the boost as well', heard.boost === null && boost.connected === false && heard.audio.muted === true);
+b.voice.setPeerMuted(a.room.self.deviceId, false);
+check('unmuting brings the boost back', heard.boost?.gain.gain.value === 2 && heard.audio.muted === true);
+b.voice.setVolume(a.room.self.deviceId, 0.8);
+check('back at 80 % the element plays again and the gain node is gone',
+	heard.boost === null && heard.audio.muted === false && heard.audio.volume === 0.8 && boost.connected === false);
+b.voice.setVolume(a.room.self.deviceId, 1);
 
 // --- a third member, with no microphone of its own ---
 

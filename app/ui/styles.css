@@ -664,9 +664,22 @@ h2 {
 	font-weight: 500;
 }
 
+.voice-percent {
+	flex: none;
+	min-width: 3ch;
+	color: var(--muted);
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+.voice-percent.boosted {
+	color: var(--accent);
+	font-weight: 600;
+}
+
 .voice-row input[type="range"] {
 	flex: none;
-	width: 45%;
+	width: 40%;
 	accent-color: var(--accent);
 }
 
@@ -1212,6 +1225,15 @@ h2 {
 	margin: 0.1rem -0.45rem -0.35rem 0;
 	font-size: 0.7rem;
 	opacity: 0.75;
+}
+
+.meta .read {
+	margin-right: 0.4rem;
+	font-weight: 600;
+}
+
+.meta .read:empty {
+	display: none;
 }
 
 .bubble.file {

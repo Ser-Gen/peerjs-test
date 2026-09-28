@@ -190,6 +190,23 @@ await until('a message reaches the other device', () => texts(A).includes('hello
 check('with the sender’s name, and on the sender’s own side as mine', A.root.querySelector('.msg.theirs .sender')?.textContent === 'Phone' && B.root.querySelector('.msg.mine .text')?.textContent === 'hello from before');
 check('the tab of the device that got it is marked', A.ctx.notified > 0 && B.ctx.notified === 0);
 
+// --- who has read a message ---
+
+const readOf = (dev, text) => [...dev.root.querySelectorAll('.msg.mine')].find(msg => msg.querySelector('.text')?.textContent === text)?.querySelector('.read')?.textContent ?? null;
+await until('the sender is told it was read, while the Chat is on screen', () => readOf(B, 'hello from before') === 'Read', 3000, () => `"${readOf(B, 'hello from before')}"`);
+check('the reader sees nothing under a message that is not theirs', !A.root.querySelector('.msg.theirs .read'));
+A.ctx.visible = () => false; // the Chat is on another tab
+say(B, 'anybody there?');
+await until('the message arrives', () => texts(A).includes('anybody there?'));
+await sleep(700);
+check('a message that is not on screen is not read', readOf(B, 'anybody there?') === '');
+A.ctx.visible = () => true;
+window.dispatchEvent(new window.Event('focus'));
+await until('showing the Chat marks it read', () => readOf(B, 'anybody there?') === 'Read', 3000, () => `"${readOf(B, 'anybody there?')}"`);
+say(A, 'yes, here');
+await until('and the other way round', () => readOf(A, 'yes, here') === 'Read', 3000);
+check('the label names who, on hover', A.root.querySelector('.msg.mine .read').title === 'Read by Phone');
+
 // A photo sent once: to whoever is here, in memory.
 const photo = new File([new Uint8Array([137, 80, 78, 71, 1, 2, 3])], 'photo.png', { type: 'image/png' });
 let sent = sendFiles(A, [photo], false);
@@ -356,6 +373,29 @@ t1.trim(5);
 check('trimming keeps the newest messages, the same on both', t1.messages().length === 5 && t2.messages().map(m => m.text).join() === 'm4,m5,m6,m7,m8');
 check('and forgets who kept the files that went', t2.holders(old.id).length === 0);
 check('messages from members are checked: a bad one is skipped', (t1.chat.push([{ id: 'x', kind: 'text', text: 'no id' }]), t2.messages().length === 5));
+
+// --- read marks in the timeline itself ---
+
+const ids = { a: 'a'.repeat(16), b: 'b'.repeat(16), c: 'c'.repeat(16) };
+const r1 = new Timeline(fakeRoomDoc(), { deviceId: ids.a, name: 'Ann' });
+const r2 = new Timeline(fakeRoomDoc(), { deviceId: ids.b, name: 'Ben' });
+r1.roomDoc.doc.on('update', (u, o) => o !== 'remote' && lib.Y.applyUpdate(r2.roomDoc.doc, u, 'remote'));
+r2.roomDoc.doc.on('update', (u, o) => o !== 'remote' && lib.Y.applyUpdate(r1.roomDoc.doc, u, 'remote'));
+const m1 = r1.addText('one');
+const m2 = r1.addText('two');
+const m3 = r1.addText('three');
+check('nobody has read anything at first', r1.readersOf(m1).length === 0);
+check('a mark says the message and all before it are read', r2.markRead(m2.id) && r1.readersOf(m1).map(r => r.name).join() === 'Ben' && r1.readersOf(m2).length === 1 && r1.readersOf(m3).length === 0);
+check('it never moves back', !r2.markRead(m1.id) && r1.readersOf(m2).length === 1);
+check('it moves forward', r2.markRead(m3.id) && r1.readersOf(m3).length === 1);
+check('the sender is not a reader of their own message', r1.markRead(m3.id) && r1.readersOf(m3).map(r => r.deviceId).join() === ids.b);
+check('a mark for a message that is not there is refused', !r2.markRead('f'.repeat(16)));
+r1.readsMap.set('nonsense', { id: m1.id });
+r1.readsMap.set(ids.c, { id: 'not an id' });
+r1.readsMap.set(ids.c.replace(/c/g, 'd'), { id: m3.id, name: 'x'.repeat(500) });
+check('forged marks are skipped, a long name is cut', r1.reads().length === 3 && r1.reads().every(r => r.name.length <= 40), String(r1.reads().length));
+r1.trim(1);
+check('trimming lets go of marks that point at what went, and keeps the others', !r1.readsMap.has('nonsense') && r1.readsMap.has(ids.b));
 
 await sleep(200);
 check('no errors logged', errors.length === 0, errors.slice(0, 3).join(' | '));

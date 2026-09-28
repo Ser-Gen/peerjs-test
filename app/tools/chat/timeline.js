@@ -17,6 +17,8 @@ const TYPE_RE = /^[a-z0-9][\w.+-]*\/[\w.+-]+$/i;
  *     {id, kind: 'file', from, name, time, file: {name, size, type, keep, hash}}   `hash` only when `keep`
  *   map 'held'      `${file id}:${device ID}` → {name, time}: the devices that keep a copy of a kept file
  *   map 'removed'   file id → {by, from, time}: "Remove from room"; every device deletes its copy
+ *   map 'reads'     device ID → {id, name, time}: the newest message that device has had on screen; it has read that one
+ *                   and everything before it in the array. Only ever moves forward.
  * `from` is the sender's device ID and `name` its name at the time. All of it comes from members, so all of it is checked.
  */
 
@@ -59,6 +61,7 @@ function readCached(raw) {
  *   'change' ({added, deleted, remote})  messages came or went; `remote` when they came from a member
  *   'held'                               who keeps which file changed
  *   'removed' (file ids, remote)         files were removed from the room
+ *   'reads'                              somebody has read further
  */
 export class Timeline extends Emitter {
 	constructor(roomDoc, self) {
@@ -69,8 +72,11 @@ export class Timeline extends Emitter {
 		this.chat = doc.getArray('chat');
 		this.heldMap = doc.getMap('held');
 		this.removedMap = doc.getMap('removed');
+		this.readsMap = doc.getMap('reads');
 		this.cache = null;
 		this.index = null;
+		this.positions = null;
+		this.readsCache = null;
 		this.holderIndex = null;
 		this.trimQueued = false;
 		this.chat.observe((event, transaction) => this.onChat(event, transaction));
@@ -78,12 +84,16 @@ export class Timeline extends Emitter {
 			this.holderIndex = null;
 			this.emit('held');
 		});
+		this.readsMap.observe(() => {
+			this.readsCache = null;
+			this.emit('reads');
+		});
 		this.removedMap.observe((event, transaction) => this.emit('removed', [...event.keysChanged], roomDoc.isRemote(transaction.origin)));
 		this.queueTrim();
 	}
 
 	onChat(event, transaction) {
-		this.cache = this.index = null;
+		this.cache = this.index = this.positions = null;
 		const read = items => [...items].flatMap(item => item.content.getContent().map(readCached).filter(Boolean));
 		this.emit('change', { added: read(event.changes.added), deleted: read(event.changes.deleted), remote: this.roomDoc.isRemote(transaction.origin) });
 		this.queueTrim();
@@ -99,6 +109,26 @@ export class Timeline extends Emitter {
 	message(id) {
 		this.index ??= new Map(this.messages().map(msg => [msg.id, msg]));
 		return this.index.get(id) ?? null;
+	}
+
+	/** Where a message is in the history (oldest is 0), or -1. */
+	position(id) {
+		this.positions ??= new Map(this.messages().map((msg, i) => [msg.id, i]));
+		return this.positions.get(id) ?? -1;
+	}
+
+	/** Who has read how far: [{deviceId, name, id}]. */
+	reads() {
+		this.readsCache ??= [...this.readsMap].slice(0, 500).flatMap(([deviceId, raw]) =>
+			DEVICE_RE.test(deviceId) && ID_RE.test(raw?.id) ? [{ deviceId, id: raw.id, name: cleanName(raw.name) || 'Device' }] : []);
+		return this.readsCache;
+	}
+
+	/** The devices that have read a message: everyone but its sender whose mark is at or after it. */
+	readersOf(msg) {
+		const at = this.position(msg.id);
+		if (at < 0) return [];
+		return this.reads().filter(read => read.deviceId !== msg.from && this.position(read.id) >= at);
 	}
 
 	removed(fileId) {
@@ -146,6 +176,16 @@ export class Timeline extends Emitter {
 		return msg;
 	}
 
+	/** This device has read up to this message. Returns whether the mark moved (it never goes back). */
+	markRead(id) {
+		const at = this.position(id);
+		if (at < 0) return false;
+		const mine = this.readsMap.get(this.self.deviceId);
+		if (ID_RE.test(mine?.id) && this.position(mine.id) >= at) return false;
+		this.readsMap.set(this.self.deviceId, { id, name: this.self.name, time: Date.now() });
+		return true;
+	}
+
 	/** Mark a file removed. Every device deletes its copy, so nobody is listed as keeping it any more. */
 	remove(fileId) {
 		this.roomDoc.doc.transact(() => {
@@ -177,9 +217,12 @@ export class Timeline extends Emitter {
 	trim(max = MAX_MESSAGES) {
 		const over = this.chat.length - max;
 		if (over <= 0 || this.roomDoc.destroyed) return;
-		const gone = this.chat.slice(0, over).map(readCached).filter(msg => msg?.kind === 'file').map(msg => msg.id);
+		const trimmed = this.chat.slice(0, over).map(readCached).filter(Boolean);
+		const gone = trimmed.filter(msg => msg.kind === 'file').map(msg => msg.id);
+		const goneIds = new Set(trimmed.map(msg => msg.id));
 		this.roomDoc.doc.transact(() => {
 			this.chat.delete(0, over);
+			for (const [deviceId, raw] of [...this.readsMap]) if (goneIds.has(raw?.id)) this.readsMap.delete(deviceId);
 			for (const id of gone) {
 				this.removedMap.delete(id);
 				for (const { deviceId } of this.holders(id)) this.heldMap.delete(`${id}:${deviceId}`);

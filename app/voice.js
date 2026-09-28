@@ -11,6 +11,7 @@ const REDIAL_DELAY = 1000;
 const REDIAL_TRIES = 5; // after this many quick tries the pair keeps trying, slowly, while both are in voice
 const SLOW_REDIAL = 15000;
 const CALL_TIMEOUT = 10000; // ms to wait for the audio of a call before dialing again
+export const MAX_VOLUME = 2; // a member can be turned up to 200 % (an <audio> element stops at 100 %; see boost())
 
 /*
  * Voice in the room: an open microphone with a mute button, for everyone who joins it.
@@ -116,6 +117,11 @@ export class Voice extends Emitter {
 
 	mutedFor(deviceId) {
 		return this.prefs.peers[deviceId]?.muted === true;
+	}
+
+	/** Whether a member can be turned up past 100 %: that needs Web Audio and a copy of the track. */
+	get canBoost() {
+		return Boolean(globalThis.AudioContext ?? globalThis.webkitAudioContext) && typeof MediaStream === 'function';
 	}
 
 	// --- joining and leaving ---
@@ -371,7 +377,7 @@ export class Voice extends Emitter {
 	play(peer, stream) {
 		const audio = (peer.audio ??= this.makeAudio());
 		audio.srcObject = stream;
-		this.applyVolume(peer);
+		this.unboost(peer);
 		const played = audio.play?.();
 		played?.catch?.(() => {
 			// Autoplay refused: the room bar offers a tap.
@@ -379,6 +385,7 @@ export class Voice extends Emitter {
 			this.changed();
 		});
 		peer.level = this.analyse(tap(stream), true);
+		this.applyVolume(peer); // after the tap: turned up past 100 %, the sound goes through a copy of the track
 		this.follow(peer, stream);
 	}
 
@@ -435,6 +442,7 @@ export class Voice extends Emitter {
 		peer.since = 0;
 		peer.unflow?.();
 		peer.flowing = false;
+		this.unboost(peer);
 		disconnect(peer.level);
 		peer.level = null;
 		if (!peer.audio) return;
@@ -445,8 +453,60 @@ export class Voice extends Emitter {
 
 	applyVolume(peer) {
 		if (!peer.audio) return;
-		peer.audio.volume = this.volumeOf(peer.deviceId);
-		peer.audio.muted = this.mutedFor(peer.deviceId);
+		const volume = this.volumeOf(peer.deviceId);
+		const off = this.mutedFor(peer.deviceId);
+		// An element can't go past 100 %. Above it the element is silenced and the sound plays through a gain node
+		// instead (never both: two copies a few milliseconds apart would sound hollow).
+		const boosted = volume > 1 && !off && this.boost(peer, volume);
+		if (!boosted) this.unboost(peer);
+		peer.audio.volume = Math.min(1, volume);
+		peer.audio.muted = off || boosted;
+	}
+
+	/**
+	 * Plays a member louder than 100 %: their tap (a copy of the track, see tap()) through a gain and a limiter, so
+	 * a loud voice at 200 % is squeezed instead of clipped. Returns false when there is no Web Audio to do it with.
+	 * The element stays attached, muted, because Chrome starts a remote stream only when a media element has it.
+	 * Its echo cancellation doesn't see this sound as it does an element's, so headphones are better.
+	 */
+	boost(peer, volume) {
+		const stream = peer.level?.owned;
+		const ctx = this.audioCtx;
+		if (!stream || !ctx) return false;
+		try {
+			ctx.resume?.().catch?.(() => {}); // a slider drag is a gesture, which a suspended context was waiting for
+			if (!peer.boost) {
+				const source = ctx.createMediaStreamSource(stream);
+				const gain = ctx.createGain();
+				const limiter = ctx.createDynamicsCompressor();
+				limiter.threshold.value = -3;
+				limiter.knee.value = 0;
+				limiter.ratio.value = 20;
+				limiter.attack.value = 0.002;
+				limiter.release.value = 0.1;
+				source.connect(gain);
+				gain.connect(limiter);
+				limiter.connect(ctx.destination);
+				peer.boost = { source, gain, limiter };
+			}
+			peer.boost.gain.gain.value = volume;
+			return true;
+		} catch {
+			this.unboost(peer);
+			return false;
+		}
+	}
+
+	unboost(peer) {
+		const nodes = peer.boost;
+		peer.boost = null;
+		for (const node of nodes ? [nodes.source, nodes.gain, nodes.limiter] : []) {
+			try {
+				node.disconnect();
+			} catch {
+				// the context is already closed
+			}
+		}
 	}
 
 	/**
@@ -657,7 +717,7 @@ function tap(stream) {
 
 const stopStream = stream => stream?.getTracks().forEach(track => track.stop());
 
-const clamp = value => (Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1);
+const clamp = value => (Number.isFinite(value) ? Math.min(MAX_VOLUME, Math.max(0, value)) : 1);
 
 function micError(err) {
 	switch (err?.name) {

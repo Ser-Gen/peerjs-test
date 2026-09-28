@@ -10,6 +10,7 @@ const PREFS_KEY = 'peerkit.chat';
 const PREFS_VERSION = 1;
 const PAGE = 200; // messages shown at first, and how many more "Show earlier" adds
 const UI_INTERVAL = 200;
+const READ_DELAY = 400; // ms a message stays on screen before it counts as read
 const PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
 const COPY_PART = 4 * 1024 * 1024; // how the sender's own copy of a kept file is read and stored
 const MAX_NOTES = 100; // "… joined" and "… left" lines kept on the page
@@ -21,6 +22,8 @@ const MAX_NOTES = 100; // "… joined" and "… left" lines kept on the page
  *   - Keep for the room: the sender and every receiver keep a copy on disk (kept.js); whoever comes later taps
  *     Open or Download and gets it from any member online that has one (transfers.js), checked against its hash.
  * Files open in the viewer (viewer.js) without being saved first.
+ * Read marks: while the Chat is on screen (the tab shown, the page visible) the newest message that is in view is
+ * this device's mark in the room document (`reads`), and a message of your own says who has read it.
  */
 
 export default {
@@ -85,6 +88,7 @@ class ChatTool {
 		this.notes = []; // { node, after }: who joined and left, shown after the message that was last then
 		this.pending = []; // files being read (and kept) before they go into the chat
 		this.shown = PAGE;
+		this.readTimer = null;
 		this.transfers = new Transfers(room, { source: id => this.sourceOf(id), sink: (meta, member) => this.sinkFor(meta, member) });
 
 		this.fileInput = h('input', {
@@ -111,7 +115,7 @@ class ChatTool {
 			this.fileInput, this.attachBtn, this.textarea, this.sendBtn);
 		this.empty = h('div', { class: 'feed-empty' });
 		this.earlier = button('Show earlier messages', null, () => this.showEarlier(), 'btn small ghost feed-earlier');
-		this.feed = h('div', { class: 'feed', role: 'log', 'aria-live': 'polite' }, this.empty);
+		this.feed = h('div', { class: 'feed', role: 'log', 'aria-live': 'polite', onscroll: () => this.scheduleRead() }, this.empty);
 		this.el = h('div', { class: 'chat' }, this.feed, this.form);
 		root.append(this.el);
 
@@ -132,11 +136,17 @@ class ChatTool {
 		document.addEventListener('dragover', this.onDragOver);
 		document.addEventListener('dragleave', this.onDragLeave);
 		document.addEventListener('drop', this.onDrop);
+		this.onSeen = () => this.scheduleRead();
+		document.addEventListener('visibilitychange', this.onSeen);
+		window.addEventListener('focus', this.onSeen);
 
 		this.unsubscribe = [
 			room.on('link-up', member => this.addNote(`${member.name} joined`)),
 			room.on('link-down', (member, reason) => this.addNote(reason === 'bye' ? `${member.name} left` : `Lost the connection to ${member.name}`)),
-			room.on('members', () => this.renderCards()), // who is online decides where a kept file can come from
+			room.on('members', () => {
+				this.renderCards(); // who is online decides where a kept file can come from
+				this.renderReads(); // and whether everyone here has read a message
+			}),
 			this.transfers.on('change', id => this.renderCard(id)),
 			this.transfers.on('progress', id => this.renderCard(id, false)),
 			this.transfers.on('received', (id, result) => this.onReceived(id, result)),
@@ -145,6 +155,7 @@ class ChatTool {
 			}),
 		];
 		// Android's "Share → PeerKit": the files and text another app handed over, once the room is open.
+		if (ctx.onShow) this.unsubscribe.push(ctx.onShow(() => this.scheduleRead()));
 		if (ctx.onShare) this.unsubscribe.push(ctx.onShare(share => this.onShared(share)));
 		// A file another tool hands over, such as a board from the Whiteboard: the send sheet, as for any file.
 		if (ctx.onHandOff) this.unsubscribe.push(ctx.onHandOff(file => this.confirmSend([file])));
@@ -158,6 +169,9 @@ class ChatTool {
 		document.removeEventListener('dragover', this.onDragOver);
 		document.removeEventListener('dragleave', this.onDragLeave);
 		document.removeEventListener('drop', this.onDrop);
+		document.removeEventListener('visibilitychange', this.onSeen);
+		window.removeEventListener('focus', this.onSeen);
+		clearTimeout(this.readTimer);
 		this.transfers.destroy();
 		this.data.destroy();
 		for (const url of this.previews.values()) URL.revokeObjectURL(url);
@@ -184,6 +198,7 @@ class ChatTool {
 		this.timeline.on('change', change => this.onChange(change));
 		this.timeline.on('held', () => this.renderCards());
 		this.timeline.on('removed', ids => this.onRemoved(ids));
+		this.timeline.on('reads', () => this.renderReads());
 		this.render();
 		this.renderMessages({ bottom: true });
 		await this.reconcile();
@@ -225,6 +240,55 @@ class ChatTool {
 		const self = this.room.self.deviceId;
 		this.renderMessages({ mine: !remote && added.some(msg => msg.from === self) });
 		if (remote && added.some(msg => msg.from !== self)) this.ctx.notify();
+		this.scheduleRead();
+	}
+
+	// --- read marks ---
+
+	/** Soon, and once: scrolling and new messages ask many times a second. */
+	scheduleRead() {
+		if (this.readTimer || this.destroyed) return;
+		this.readTimer = setTimeout(() => {
+			this.readTimer = null;
+			this.markRead();
+		}, READ_DELAY);
+	}
+
+	markRead() {
+		if (this.destroyed || !this.timeline || !this.ctx.visible() || document.visibilityState !== 'visible') return;
+		const id = this.newestInView();
+		if (id) this.timeline.markRead(id);
+	}
+
+	/** The newest message that is on screen (all of it, or the last one above the bottom edge), or null. */
+	newestInView() {
+		const bottom = this.feed.getBoundingClientRect().bottom;
+		const all = this.timeline.messages();
+		for (let i = all.length - 1; i >= 0; i--) {
+			const node = this.nodes.get(all[i].id);
+			if (node && node.root.getBoundingClientRect().bottom <= bottom + 2) return all[i].id;
+		}
+		return null;
+	}
+
+	/** "Read by …" under this device's own messages. */
+	readLabel(msg) {
+		const readers = this.timeline.readersOf(msg);
+		if (!readers.length) return { text: '', title: '' };
+		const here = this.room.members;
+		const everyone = here.length > 0 && here.every(member => readers.some(reader => reader.deviceId === member.deviceId));
+		const text = everyone && here.length > 1 ? 'Read by all' : everyone && readers.length === 1 ? 'Read' : `Read by ${names(readers)}`;
+		return { text, title: `Read by ${[...new Set(readers.map(reader => reader.name))].join(', ')}` };
+	}
+
+	renderReads() {
+		if (!this.timeline) return;
+		for (const node of this.nodes.values()) {
+			if (!node.read) continue;
+			const { text, title } = this.readLabel(node.msg);
+			if (node.read.textContent !== text) node.read.textContent = text;
+			node.read.title = title;
+		}
 	}
 
 	onRemoved(ids) {
@@ -613,6 +677,7 @@ class ChatTool {
 			cursor = next;
 		}
 		if (nearBottom || mine) feed.scrollTop = feed.scrollHeight;
+		this.renderReads();
 	}
 
 	nodeFor(msg) {
@@ -637,12 +702,13 @@ class ChatTool {
 			'aria-label': 'Copy text',
 			onclick: async () => toast((await copyText(msg.text)) ? 'Copied' : 'Copy failed'),
 		}, icon('copy'));
+		const read = mine ? h('span', { class: 'read' }) : null;
 		const root = h('div', { class: `msg ${mine ? 'mine' : 'theirs'}`, 'data-id': msg.id },
 			h('div', { class: 'bubble' },
 				!mine && sender(msg),
 				h('div', { class: 'text' }, linkify(msg.text)),
-				h('div', { class: 'meta' }, h('time', { datetime: new Date(msg.time).toISOString() }, timeText(msg.time)), copy)));
-		return { msg, root };
+				h('div', { class: 'meta' }, read, h('time', { datetime: new Date(msg.time).toISOString() }, timeText(msg.time)), copy)));
+		return { msg, root, read };
 	}
 
 	fileNode(msg) {
@@ -665,6 +731,7 @@ class ChatTool {
 				},
 			}, icon('trash')),
 		};
+		const read = mine ? h('span', { class: 'read' }) : null;
 		card.root = h('div', { class: `msg ${mine ? 'mine' : 'theirs'}`, 'data-id': msg.id },
 			h('div', { class: 'bubble file' },
 				!mine && sender(msg),
@@ -677,8 +744,8 @@ class ChatTool {
 				card.bar,
 				card.details,
 				h('div', { class: 'file-foot' }, card.status, card.actions),
-				h('div', { class: 'meta' }, h('time', { datetime: new Date(msg.time).toISOString() }, timeText(msg.time)), card.remove)));
-		const node = { msg, root: card.root, card };
+				h('div', { class: 'meta' }, read, h('time', { datetime: new Date(msg.time).toISOString() }, timeText(msg.time)), card.remove)));
+		const node = { msg, root: card.root, card, read };
 		this.drawCard(card, true);
 		return node;
 	}

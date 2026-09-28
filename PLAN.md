@@ -496,7 +496,7 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
   - Not in voice: **Join voice** with the count of who is already talking.
   - In voice: **Mute** / **Unmute**, "3 in voice", **Leave voice**, and a chevron that opens the voice sheet.
   - The member chips carry the state: a ring in the member's colour while that member speaks, a crossed-out mic when muted, nothing when the member is not in voice.
-  - Voice sheet: volume per member (a slider and a local mute, so one loud laptop can be turned down here), and the microphone to use when the device has several.
+  - Voice sheet: volume per member (a slider from 0 to 200 % with its value shown, and a local mute; a quiet or far-away person can be turned up here, a loud laptop down), and the microphone to use when the device has several.
 - **`app/voice.js`**, a room-level module mounted from `main.js` beside the tools, not a tool: it has to keep running whichever tool tab is in front.
   - **Join** (on the tap, which is also the gesture that lets audio play): `getUserMedia({ audio: { echoCancellation, noiseSuppression, autoGainControl } })`, then `voice {on: true}` to the room and a call to every member already in voice.
   - **One call per pair, not per direction**: the lower peer ID dials (the rule the links already use) with metadata `{kind: 'voice'}`, and the other side answers with its own microphone, so one connection carries both voices. A member who is not in voice answers with no stream and only listens.
@@ -959,8 +959,26 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 **Checklist**
 - [ ] While someone talks, Mute and Unmute react to the first tap, on the phone and on the laptop.
 - [ ] Open the voice settings sheet while someone talks: the volume slider can be dragged.
+- [ ] Turn a quiet member up to 150 % and 200 % (0.13.4): clearly louder, no crackle on a loud voice, and with headphones no echo; back at 100 % or below the sound continues without a gap.
 - [ ] Two phones join voice for the first time on that phone (the permission prompt appears): if it says "connecting…", it sorts itself out within about 15 s without leaving voice.
 - [ ] Draw on the whiteboard with the mouse while a phone watches, several times: every line stays on both screens.
+
+### Read marks in the Chat (2026-09-29, 0.13.4)
+
+**Why:** a text message showed nothing after sending; only files said "Delivered". You want to see that someone has read it.
+
+**As built**
+- Each device writes one mark into the room document, map `reads`: device ID → `{id, name, time}`, the newest message it has had in view. It counts as read together with every message before it, so the map stays small and a newcomer gets it by the normal sync. It only moves forward; trimming deletes marks that point at messages that went. No protocol change: older devices just carry the map.
+- A mark is written by the Chat only while it can be seen (tab shown or panel visible, and a visible page), 0.4 s after a scroll, a new message, returning to the tab or window focus. It is the newest message whose bottom edge is inside the feed, so a message above the fold stays unread until it is scrolled to.
+- Your own messages, text and files, get a label next to the time: **Read** (the one other person here has), **Read by Ann and Ben** or **Read by all** (everyone online now has); hovering lists the names. Messages from others show nothing.
+- Not done: a switch to stop sending marks. A device that never opens the Chat never marks anything, and someone who joins late marks the whole history as read when the Chat first shows.
+- Tests: the chat test has 15 more checks (a message read while the Chat is shown, one that is not while it is on another tab and then is when shown, the other way round, the label's title; in the timeline: forward only, the sender not counting, forged marks, trimming).
+
+**Checklist**
+- [ ] Send a message to a second device that has the Chat open: "Read" appears under it within a second.
+- [ ] Send one while the other device is on another tab or has the page in the background: nothing until it looks at the Chat.
+- [ ] With three devices: "Read by <name>" first, "Read by all" once both have looked.
+- [ ] Scroll the other device up so the message is off screen: it stays unread until scrolled to.
 
 ### Monaco in the Editor (2026-09-26, 0.13.3)
 
