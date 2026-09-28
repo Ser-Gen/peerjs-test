@@ -1,6 +1,7 @@
 // The installable app: manifest.webmanifest, sw.js and app/share.js — the Android share target end to end.
 // The service worker runs for real (test/sw-harness.mjs); app/share.js then reads what it wrote.
 import { readFileSync, readdirSync } from 'node:fs';
+import { inflateSync } from 'node:zlib';
 import { diskFetch, fakeCaches, loadServiceWorker } from './sw-harness.mjs';
 
 const ROOT = new URL('../', import.meta.url).pathname.replace(/\/$/, ''); // the repo root
@@ -17,6 +18,32 @@ const pngSize = name => {
 	const bytes = readFileSync(`${ROOT}/${name}`);
 	return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
 };
+// The alpha of an RGBA PNG's top-left pixel (null for another colour type). The first pixel of the first row is stored
+// as it is whatever the row's filter, so it is byte 4 of the inflated data (after the filter byte).
+const pngCornerAlpha = name => {
+	const bytes = readFileSync(`${ROOT}/${name}`);
+	if (bytes[25] !== 6 || bytes[24] !== 8) return null;
+	const data = [];
+	for (let at = 8; at < bytes.length;) {
+		const length = bytes.readUInt32BE(at);
+		if (bytes.toString('latin1', at + 4, at + 8) === 'IDAT') data.push(bytes.subarray(at + 8, at + 8 + length));
+		at += 12 + length;
+	}
+	return inflateSync(Buffer.concat(data))[4];
+};
+// Each entry of an .ico: its size, bits per pixel and the alpha of its top-left pixel (32-bit BMP entries only:
+// rows go bottom up, so the top row is the last one before the AND mask).
+const icoEntries = name => {
+	const bytes = readFileSync(`${ROOT}/${name}`);
+	return Array.from({ length: bytes.readUInt16LE(4) }, (_, i) => {
+		const entry = 6 + 16 * i;
+		const size = bytes[entry] || 256;
+		const bpp = bytes.readUInt16LE(entry + 6);
+		const offset = bytes.readUInt32LE(entry + 12);
+		const top = offset + bytes.readUInt32LE(offset) + (size - 1) * size * 4;
+		return { size, bpp, cornerAlpha: bpp === 32 ? bytes[top + 3] : null };
+	});
+};
 
 // --- the manifest ---
 
@@ -32,6 +59,13 @@ check('it offers the 192 and 512 icons Chrome asks for',
 	&& icons['icon-192.png']?.sizes === '192x192' && icons['icon-512.png']?.sizes === '512x512');
 check('and a maskable one, so Android does not put the icon in a white box',
 	icons['icon-maskable-512.png']?.purpose === 'maskable' && pngSize('icon-maskable-512.png').join() === '512,512');
+check('the rounded icons have transparent corners (QuickLook renders onto white, so a render left as it is has white ones)',
+	pngCornerAlpha('icon-192.png') === 0 && pngCornerAlpha('icon-512.png') === 0,
+	`${pngCornerAlpha('icon-192.png')}, ${pngCornerAlpha('icon-512.png')}`);
+const ico = icoEntries('favicon.ico');
+check('favicon.ico holds 16, 32 and 48 px, each 32-bit with see-through corners (a palette entry loses its alpha)',
+	ico.map(e => e.size).join() === '16,32,48' && ico.every(e => e.bpp === 32 && e.cornerAlpha < 16),
+	JSON.stringify(ico));
 
 const target = manifest.share_target;
 check('the share target takes files by POST',

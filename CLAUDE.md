@@ -56,13 +56,14 @@ The app has no build step. There are two package.json files, neither in the repo
 - Syntax check: `for f in app/*.js app/*/*.js app/*/*/*.js; do node --check "$f"; done`
 - Tests: `node test/run.mjs` (one name to run one, `--times 20` to repeat the random anchor handover). See `test/README.md`; the `dom/` tests need `npm install` in `test/`.
 - npm here has `min-release-age=21`: pin versions at least 21 days old instead of overriding it.
-- Icons after editing `icon.svg` (ImageMagick renders SVG badly, so QuickLook does the rendering; the square copy is for iOS, which masks the corners itself, and the maskable one is the icon at 72 % on a full-bleed background, inside Android's safe circle):
-  `sed 's/ rx="14"//; /rx="13.5"/d' icon.svg > /tmp/icon-square.svg && cp icon.svg /tmp/ && qlmanage -t -s 1024 -o /tmp /tmp/icon.svg /tmp/icon-square.svg`,
-  then `magick /tmp/icon-square.svg.png -resize 180x180 -background '#0c0f16' -alpha remove -alpha off -strip apple-touch-icon.png`,
-  `magick /tmp/icon.svg.png -resize 192x192 -strip icon-192.png` (also 512),
-  `magick /tmp/icon.svg.png -resize 48x48 -strip ico48.png` (also 32 and 16) `&& magick ico16.png ico32.png ico48.png favicon.ico`.
+- Icons after editing `icon.svg` (ImageMagick renders SVG badly, so QuickLook does the rendering; QuickLook draws onto opaque white, so the rounded icons are rendered square and their corners cut with a mask, never from a render of the rounded SVG. The square copy is also iOS's, which masks the corners itself, and the maskable one is the icon at 72 % on a full-bleed background, inside Android's safe circle):
+  `sed 's/ rx="14"//' icon.svg > /tmp/icon-square.svg && qlmanage -t -s 1024 -o /tmp /tmp/icon-square.svg`,
+  `magick -size 1024x1024 xc:none -fill white -draw 'roundrectangle 0,0 1023,1023 224,224' /tmp/mask.png && magick /tmp/icon-square.svg.png /tmp/mask.png -compose DstIn -composite /tmp/rounded.png` (224 = rx 14 of 64),
+  then `magick /tmp/icon-square.svg.png -resize 180x180 -alpha off -strip apple-touch-icon.png`,
+  `magick /tmp/rounded.png -resize 192x192 -strip icon-192.png` (also 512),
+  `magick /tmp/rounded.png -resize 48x48 -strip ico48.png` (also 32 and 16) `&& magick ico16.png ico32.png ico48.png -type TrueColorAlpha favicon.ico` (without `-type`, the 16 px entry becomes a palette image and loses its transparency).
   The maskable one: build `/tmp/icon-maskable.svg` as icon.svg with its two rects (the background and the border) replaced by `<rect width="64" height="64" fill="url(#bg)"/>` and the other shapes inside `<g transform="translate(32,32) scale(0.72) translate(-32,-32)">`, render it the same way, then
-  `magick /tmp/icon-maskable.svg.png -resize 512x512 -background '#0c0f16' -alpha remove -alpha off -strip icon-maskable-512.png`
+  `magick /tmp/icon-maskable.svg.png -resize 512x512 -alpha off -strip icon-maskable-512.png`. The pwa test checks the corners and the .ico's entries.
 - Phone testing needs HTTPS (the GitHub Pages URL). Camera, sensors, clipboard, Wake Lock and Web Locks don't work on `http://<lan-ip>`.
 - Browser testing isn't expected: check logic with the tests in `test/` instead, and add to them when a slice adds behaviour. Stub `window`, `document`, `localStorage`, `navigator`, `location` and a fake `Peer` before importing: `util.js` and the stores touch those globals at import time. `Room` takes an `identity` ({id, name}) so several simulated devices can run in one process.
 
