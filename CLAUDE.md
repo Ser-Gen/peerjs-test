@@ -12,7 +12,7 @@ A mobile-first static web app for peer-to-peer tools built on peerjs (WebRTC). U
 
 ```
 index.html              app shell; loads vendor/*.js as globals, then app/main.js
-icon.svg                app icon (three linked peers); favicon.ico, apple-touch-icon.png and icon-*.png are rendered from it
+icon.svg                app icon (dark: three peers and this device in the middle, all linked to each other, in a dashed room); favicon.ico, apple-touch-icon.png and icon-*.png are rendered from it
 manifest.webmanifest    PWA: name, icons, standalone, and the Android share target
 sw.js                   service worker: installability, the offline shell (network first), and the share POST
 LICENSE                 MIT; vendored libraries keep their own licences (vendor/README.md)
@@ -57,12 +57,12 @@ The app has no build step. There are two package.json files, neither in the repo
 - Tests: `node test/run.mjs` (one name to run one, `--times 20` to repeat the random anchor handover). See `test/README.md`; the `dom/` tests need `npm install` in `test/`.
 - npm here has `min-release-age=21`: pin versions at least 21 days old instead of overriding it.
 - Icons after editing `icon.svg` (ImageMagick renders SVG badly, so QuickLook does the rendering; the square copy is for iOS, which masks the corners itself, and the maskable one is the icon at 72 % on a full-bleed background, inside Android's safe circle):
-  `sed 's/ rx="14"//' icon.svg > /tmp/icon-square.svg && cp icon.svg /tmp/ && qlmanage -t -s 1024 -o /tmp /tmp/icon.svg /tmp/icon-square.svg`,
-  then `magick /tmp/icon-square.svg.png -resize 180x180 -background '#2f6fed' -alpha remove -alpha off -strip apple-touch-icon.png`,
+  `sed 's/ rx="14"//; /rx="13.5"/d' icon.svg > /tmp/icon-square.svg && cp icon.svg /tmp/ && qlmanage -t -s 1024 -o /tmp /tmp/icon.svg /tmp/icon-square.svg`,
+  then `magick /tmp/icon-square.svg.png -resize 180x180 -background '#0c0f16' -alpha remove -alpha off -strip apple-touch-icon.png`,
   `magick /tmp/icon.svg.png -resize 192x192 -strip icon-192.png` (also 512),
   `magick /tmp/icon.svg.png -resize 48x48 -strip ico48.png` (also 32 and 16) `&& magick ico16.png ico32.png ico48.png favicon.ico`.
-  The maskable one: build `/tmp/icon-maskable.svg` as `<rect width="64" height="64" fill="#2f6fed"/>` plus icon.svg's shapes (without its own rect) inside `<g transform="translate(32,32) scale(0.72) translate(-32,-32)">`, render it the same way, then
-  `magick /tmp/icon-maskable.svg.png -resize 512x512 -background '#2f6fed' -alpha remove -alpha off -strip icon-maskable-512.png`
+  The maskable one: build `/tmp/icon-maskable.svg` as icon.svg with its two rects (the background and the border) replaced by `<rect width="64" height="64" fill="url(#bg)"/>` and the other shapes inside `<g transform="translate(32,32) scale(0.72) translate(-32,-32)">`, render it the same way, then
+  `magick /tmp/icon-maskable.svg.png -resize 512x512 -background '#0c0f16' -alpha remove -alpha off -strip icon-maskable-512.png`
 - Phone testing needs HTTPS (the GitHub Pages URL). Camera, sensors, clipboard, Wake Lock and Web Locks don't work on `http://<lan-ip>`.
 - Browser testing isn't expected: check logic with the tests in `test/` instead, and add to them when a slice adds behaviour. Stub `window`, `document`, `localStorage`, `navigator`, `location` and a fake `Peer` before importing: `util.js` and the stores touch those globals at import time. `Room` takes an `identity` ({id, name}) so several simulated devices can run in one process.
 
