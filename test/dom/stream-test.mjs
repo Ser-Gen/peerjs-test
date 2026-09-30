@@ -86,6 +86,25 @@ const { newRoomCode } = await import(`${ROOT}/app/rooms.js`);
 const { CH } = await import(`${ROOT}/app/protocol.js`);
 const { wakeLock } = await import(`${ROOT}/app/util.js`);
 const { default: stream } = await import(`${ROOT}/app/tools/stream.js`);
+const { MARK_TIMING } = await import(`${ROOT}/app/tools/stream-marks.js`);
+
+// Canvases record what is drawn on them.
+class FakeContext {
+	constructor() {
+		this.ops = [];
+	}
+}
+for (const name of ['setTransform', 'clearRect', 'beginPath', 'moveTo', 'lineTo', 'stroke']) {
+	FakeContext.prototype[name] = function (...args) {
+		this.ops.push([name, ...args]);
+	};
+}
+const contextOf = new WeakMap();
+window.HTMLCanvasElement.prototype.getContext = function (kind) {
+	if (kind !== '2d') return null;
+	if (!contextOf.has(this)) contextOf.set(this, new FakeContext());
+	return contextOf.get(this);
+};
 
 const sleep = ms => new Promise(resolve => realSetTimeout(resolve, ms));
 let failures = 0;
@@ -153,6 +172,26 @@ const playing = (dev, title) => {
 const says = (dev, title) => tileOf(dev, title)?.querySelector('.stage-message:not([hidden])')?.textContent ?? '';
 const status = (dev, kind) => dev.root.querySelector(`.stream-out[data-kind="${kind}"] .live`)?.textContent ?? '';
 const linked = (...devs) => devs.every(dev => dev.room.members.length === devs.length - 1);
+/** Lay out a video with its marks: the element's size in CSS pixels and the picture's own size. */
+function lay(video, width, height, videoWidth, videoHeight) {
+	const marks = video.parentNode.querySelector('.marks');
+	for (const [el, props] of [[marks, { clientWidth: width, clientHeight: height }], [video, { videoWidth, videoHeight }]]) {
+		for (const [key, value] of Object.entries(props)) Object.defineProperty(el, key, { value, configurable: true });
+	}
+	marks.getBoundingClientRect = () => ({ left: 0, top: 0, right: width, bottom: height, width, height });
+	return marks;
+}
+function pointer(el, type, clientX, clientY, { pointerType = 'mouse', pointerId = 1 } = {}) {
+	const e = new window.MouseEvent(type, { clientX, clientY, button: 0, bubbles: true, cancelable: true });
+	Object.defineProperties(e, { pointerId: { value: pointerId }, pointerType: { value: pointerType } });
+	el.dispatchEvent(e);
+}
+const pointerAt = marks => {
+	const el = marks.querySelector('.mark-pointer');
+	return el && { name: el.textContent, left: parseFloat(el.style.left), top: parseFloat(el.style.top) };
+};
+const near = (a, b) => Math.abs(a - b) < 0.5;
+const canvasOps = marks => contextOf.get(marks.querySelector('canvas'))?.ops ?? [];
 /** The calls a device sends its `kind` over: the RTCPeerConnections holding its captured track. */
 const pcsWith = t => rtc.made.filter(pc => !pc.closed && pc.senders.some(sender => sender.track === t));
 
@@ -186,6 +225,77 @@ check('which unmutes it and turns into Mute', !tileOf(P, 'Laptop’s screen').qu
 byLabel(tileOf(P, 'Laptop’s screen'), 'Mute').click();
 check('Mute silences that stream alone', tileOf(P, 'Laptop’s screen').querySelector('.remote').muted && Boolean(byLabel(tileOf(P, 'Laptop’s screen'), 'Unmute')));
 byLabel(tileOf(P, 'Laptop’s screen'), 'Unmute').click();
+
+// --- pointing and drawing on the screen: the laptop's preview and the other viewer show it in the same place ---
+
+// The tablet is square, the phone portrait, the laptop's preview landscape: the 16:9 picture is letterboxed
+// differently on each.
+const onTablet = lay(tileOf(T, 'Laptop’s screen').querySelector('.remote'), 400, 400, 1600, 900); // picture 400×225 at y 87.5
+const onPhone = lay(tileOf(P, 'Laptop’s screen').querySelector('.remote'), 300, 600, 1600, 900); // picture 300×168.75 at y 215.625
+const onLaptop = lay(L.root.querySelector('.preview-box[data-kind="screen"] video'), 800, 450, 1600, 900); // picture fills it
+check('a stream offers Point and Draw, and no Clear with nothing drawn',
+	Boolean(byLabel(tileOf(T, 'Laptop’s screen'), 'Point')) && Boolean(byLabel(tileOf(T, 'Laptop’s screen'), 'Draw')) && !byLabel(tileOf(T, 'Laptop’s screen'), 'Clear marks'));
+let marksSent = 0;
+const countMarks = L.room.on(`msg:${CH.STREAM}`, msg => msg.type === 'mark' && marksSent++);
+byLabel(tileOf(T, 'Laptop’s screen'), 'Point').click();
+check('Point is pressed, and the picture takes the pointer', byLabel(tileOf(T, 'Laptop’s screen'), 'Point').getAttribute('aria-pressed') === 'true' && onTablet.classList.contains('marking'));
+for (let i = 0; i <= 50; i++) pointer(onTablet, 'pointermove', 200 + i * 2, 143.75); // ends 3/4 across and 1/4 down the picture
+await until('the tablet’s pointer shows on the laptop’s preview, named', () => pointerAt(onLaptop)?.name === 'Tablet');
+await until('in the same place of the picture', () => near(pointerAt(onLaptop).left, 600) && near(pointerAt(onLaptop).top, 112.5), 3000, () => JSON.stringify(pointerAt(onLaptop)));
+await until('and on the phone’s portrait tile too, letterbox and all', () => near(pointerAt(onPhone)?.left, 225) && near(pointerAt(onPhone)?.top, 257.8125), 3000, () => JSON.stringify(pointerAt(onPhone)));
+check('51 moves make at most a few messages', marksSent >= 1 && marksSent <= 3, `${marksSent}`);
+check('in the tablet’s own colour', onLaptop.querySelector('.mark-pointer').style.getPropertyValue('--mark') === T.room.self.color);
+await until('the laptop is told the marks are on its preview only', () => document.querySelector('#toasts').textContent.includes('not on your real screen'));
+pointer(onTablet, 'pointerleave', 300, 143.75);
+await until('leaving the picture takes the pointer away everywhere', () => !pointerAt(onLaptop) && !pointerAt(onPhone));
+
+// A finger points only while it touches.
+byLabel(tileOf(P, 'Laptop’s screen'), 'Point').click();
+pointer(onPhone, 'pointermove', 150, 300, { pointerType: 'touch' });
+await sleep(100);
+check('a finger that isn’t down doesn’t point', !pointerAt(onLaptop));
+pointer(onPhone, 'pointerdown', 150, 300, { pointerType: 'touch' });
+await until('a touch points', () => pointerAt(onLaptop)?.name === 'Phone' && near(pointerAt(onLaptop).left, 400) && near(pointerAt(onTablet)?.top, 200));
+pointer(onPhone, 'pointerup', 150, 300, { pointerType: 'touch' });
+await until('and lifting the finger ends it', () => !pointerAt(onLaptop) && !pointerAt(onTablet));
+byLabel(tileOf(P, 'Laptop’s screen'), 'Point').click();
+
+// Draw: a stroke on the tablet shows everywhere, and anyone can clear it.
+byLabel(tileOf(T, 'Laptop’s screen'), 'Draw').click();
+check('Draw takes over from Point', byLabel(tileOf(T, 'Laptop’s screen'), 'Draw').getAttribute('aria-pressed') === 'true' && byLabel(tileOf(T, 'Laptop’s screen'), 'Point').getAttribute('aria-pressed') === 'false');
+pointer(onTablet, 'pointerdown', 100, 143.75);
+for (let i = 1; i <= 20; i++) pointer(onTablet, 'pointermove', 100 + i * 5, 143.75);
+pointer(onTablet, 'pointerup', 200, 143.75);
+const clearOnLaptop = () => L.root.querySelector('.stream-out[data-kind="screen"] [aria-label="Clear marks"]');
+await until('the stroke reaches the laptop, which can clear it', () => clearOnLaptop() && !clearOnLaptop().hidden);
+await until('and the phone', () => Boolean(byLabel(tileOf(P, 'Laptop’s screen'), 'Clear marks')));
+await until('drawn from the same place of the picture on each', () =>
+	canvasOps(onPhone).some(op => op[0] === 'moveTo' && near(op[1], 75) && near(op[2], 257.8125)) &&
+	canvasOps(onLaptop).some(op => op[0] === 'moveTo' && near(op[1], 200) && near(op[2], 112.5)) &&
+	canvasOps(onPhone).some(op => op[0] === 'lineTo' && near(op[1], 150) && near(op[2], 257.8125)), 3000);
+check('the tablet sees its own stroke', Boolean(byLabel(tileOf(T, 'Laptop’s screen'), 'Clear marks')));
+byLabel(tileOf(P, 'Laptop’s screen'), 'Clear marks').click();
+// (Short waits: a stroke would fade by itself after 4 s.)
+await until('Clear on the phone removes it for everyone', () => clearOnLaptop().hidden && !byLabel(tileOf(T, 'Laptop’s screen'), 'Clear marks') && !byLabel(tileOf(P, 'Laptop’s screen'), 'Clear marks'), 1000);
+
+// The sender clears too.
+pointer(onTablet, 'pointerdown', 100, 100);
+pointer(onTablet, 'pointermove', 150, 150);
+pointer(onTablet, 'pointerup', 150, 150);
+await until('(another stroke)', () => !clearOnLaptop().hidden && byLabel(tileOf(P, 'Laptop’s screen'), 'Clear marks'));
+clearOnLaptop().click();
+await until('the laptop’s Clear removes it for every viewer', () => !byLabel(tileOf(T, 'Laptop’s screen'), 'Clear marks') && !byLabel(tileOf(P, 'Laptop’s screen'), 'Clear marks'), 1000);
+
+// Strokes fade by themselves.
+Object.assign(MARK_TIMING, { hold: 100, fade: 100 });
+pointer(onTablet, 'pointerdown', 100, 100);
+pointer(onTablet, 'pointermove', 150, 150);
+pointer(onTablet, 'pointerup', 150, 150);
+await until('(a third stroke)', () => !clearOnLaptop().hidden);
+await until('a stroke fades out on its own everywhere', () => clearOnLaptop().hidden && !byLabel(tileOf(T, 'Laptop’s screen'), 'Clear marks') && !byLabel(tileOf(P, 'Laptop’s screen'), 'Clear marks'), 3000);
+byLabel(tileOf(T, 'Laptop’s screen'), 'Draw').click();
+check('Draw off gives the picture back to taps', !onTablet.classList.contains('marking'));
+countMarks();
 
 // --- the phone shares its camera at the same time ---
 
@@ -291,6 +401,7 @@ const H = new Room({ code, ice: ice(), identity: { id: 'e'.repeat(16), name: 'He
 H.start();
 await until('(a headless member joins)', () => H.members.length === 4, 8000);
 const screenId = tileOf(T, 'Laptop’s screen').dataset.stream;
+const toTablet_ = () => H.members.find(member => member.name === 'Tablet').peerId;
 H.send(CH.STREAM, { type: 'stop', id: screenId });
 H.send(CH.STREAM, { type: 'start', id: screenId, kind: 'camera' });
 H.send(CH.STREAM, { type: 'start', id: '../x', kind: 'screen' });
@@ -298,6 +409,10 @@ H.send(CH.STREAM, { type: 'start', id: { toString: 'x' }, kind: 'screen' });
 await sleep(100);
 check('another member can’t stop or take over a stream by its id', playing(T, 'Laptop’s screen') && tileOf(T, 'Laptop’s screen').dataset.stream === screenId && !tileOf(T, 'Headless’s camera'));
 check('ids that aren’t ids are ignored', tiles(T).length === 1);
+H.send(CH.STREAM, { type: 'mark', id: screenId, pt: [0.5, 0.5] }, toTablet_());
+H.send(CH.STREAM, { type: 'mark', id: screenId, pt: [0.5, 0.5], by: L.room.self.peerId }, toTablet_());
+await sleep(100);
+check('marks on a stream from anyone but its sender are ignored', !tileOf(T, 'Laptop’s screen').querySelector('.mark-pointer'));
 const toT = H.members.find(member => member.name === 'Tablet').peerId;
 const badCall = H.call(toT, new FakeMediaStream([new FakeTrack('video')]), { id: 'no good', kind: 'screen' });
 let badClosed = false;

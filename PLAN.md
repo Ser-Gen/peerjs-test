@@ -724,6 +724,19 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 **Tricky points**
 - A web page can't draw over the sender's real desktop: the sender sees the marks only on its PeerKit preview. The UI says so.
 
+**As built** (2026-09-30, app 0.13.7, `PROTOCOL_VERSION` 8 — right after Slice 11)
+- **Point and Draw** are buttons on every stream (next to Full screen), shown while it plays. With one on, the picture takes the pointer instead of a tap to focus it.
+  - Point: a mouse or a hovering pen points while it moves over the picture, and a finger while it touches. Everyone watching, the sender included, sees a dot in the viewer's colour with its name.
+  - Draw: strokes in the viewer's colour stay 3 s after they end, then fade over 1 s. **Clear** (on a stream with strokes, and on the sender's row) removes every stroke for everyone.
+- **Positions are fractions of the video picture**: the letterboxing of each tile (a square tablet, a portrait phone) and the sender's mirrored camera preview are taken out, so a mark lands on the same spot everywhere.
+- **Through the sender**: a viewer sends its marks (`mark {id, pt?, st?, clear?}`) only to the sender, at most 30 messages a second, with what changed in between batched. The sender draws them on its preview and passes them on to its other viewers with `by`. A member who closed the stream gets none, and viewers need no link to each other. A viewer takes marks for a stream only from its sender. A pointer held still is sent again every 2 s, and one not heard from for 6 s goes away, in case its "gone" was lost.
+- **The sender** sees the marks on its preview only, and is told so once per screen share ("Viewers’ marks show on your preview here, not on your real screen").
+- No new protocol number: an older version-8 device ignores `mark`. `app/tools/stream-marks.js` holds the layer (a canvas for strokes, an element per pointer) and the outbox.
+- Differences from the plan:
+  - Sent to the sender, which passes them on, rather than to every member watching: only the sender knows who watches.
+  - The sender can't point or draw on its own preview, but it can Clear.
+- Tests: `node test/run.mjs stream` (now 101 checks) points with a mouse and with a finger, draws, clears from a viewer and from the sender, and lets a stroke fade. It checks where marks land on a square tile, a portrait phone and the sender's preview, that 51 moves make at most a few messages, and that marks from anyone but the sender are ignored. Checked in Node, not in a browser.
+
 **Checklist**
 - [ ] The phone points at a spot on the laptop's shared screen: the laptop preview and the other viewers show it in the same place.
 - [ ] A portrait phone viewing a landscape screen: the pointer still lands in the right place.

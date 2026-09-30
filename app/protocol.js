@@ -5,7 +5,7 @@ export const PROTOCOL_VERSION = 8;
 export const CH = {
 	SYS: 'sys', // links, room membership, ping / pong
 	TRANSFER: 'transfer', // file offers and requests for kept files (app/tools/chat/transfers.js)
-	STREAM: 'stream', // camera / screen start, stop, watch (media itself goes over a media call; app/tools/stream.js)
+	STREAM: 'stream', // camera / screen start, stop, watch, mark (media itself goes over a media call; app/tools/stream.js)
 	VOICE: 'voice', // who is in the room's voice conversation (app/voice.js)
 	DOC: 'doc', // shared editor: Yjs sync and awareness (app/docsync.js)
 	ROOM: 'room', // the room document: the chat and its file list, Yjs sync like DOC (app/roomdoc.js)
@@ -45,7 +45,8 @@ export const CH = {
  *
  * Version 8 sends streams to the whole room (ch: 'stream', app/tools/stream.js): a version-7 sender streams
  * to one member and stops its whole stream when that member closes it, and a version-7 viewer shows one stream
- * at a time, so a newer device's two streams would push each other off its stage.
+ * at a time, so a newer device's two streams would push each other off its stage. Marks on a stream (`mark`,
+ * app/tools/stream-marks.js) came later without a new number: a device without them ignores the message.
  *
  * Version 7 negotiates media calls over the link (ch: 'rtc', app/mediacall.js) instead of through the
  * signaling server: a version-6 device would call through the server, where a version-7 device no longer

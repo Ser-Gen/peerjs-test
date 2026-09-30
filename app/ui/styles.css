@@ -999,10 +999,17 @@ h2 {
 	gap: 2px;
 }
 
-.previews > video {
+.preview-box {
+	position: relative;
+	min-width: 0;
+	min-height: 0;
+}
+
+.preview-box > video {
+	position: absolute;
+	inset: 0;
 	width: 100%;
 	height: 100%;
-	min-height: 0;
 	object-fit: contain;
 }
 
@@ -1017,12 +1024,78 @@ h2 {
 	pointer-events: none;
 }
 
-.stream.has-remote .previews > video {
-	height: auto;
-	max-height: 8rem;
+.stream.has-remote .preview-box {
+	overflow: hidden;
 	border-radius: 10px;
 	box-shadow: 0 2px 10px rgb(0 0 0 / 0.5);
+}
+
+.stream.has-remote .preview-box > video {
+	position: static;
+	display: block;
+	height: auto;
+	max-height: 8rem;
 	object-fit: cover;
+}
+
+/* Pointers and strokes over a stream, in the picture's own coordinates (stream-marks.js). */
+.marks {
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.marks.marking {
+	pointer-events: auto;
+	touch-action: none;
+	cursor: crosshair;
+}
+
+.marks[data-mode="point"] {
+	cursor: default;
+}
+
+.marks-canvas {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+.mark-pointer {
+	position: absolute;
+	display: flex;
+	align-items: center;
+	gap: 0.3rem;
+	pointer-events: none;
+	transition: left 60ms linear, top 60ms linear;
+}
+
+.mark-dot {
+	width: 14px;
+	height: 14px;
+	margin: -7px 0 0 -7px;
+	border: 2px solid #ffffff;
+	border-radius: 50%;
+	background: var(--mark, #868e96);
+	box-shadow: 0 0 0 1px rgb(0 0 0 / 0.4), 0 0 10px var(--mark, #868e96);
+}
+
+.mark-name {
+	margin-top: -7px;
+	padding: 0.05rem 0.4rem;
+	border-radius: 6px;
+	background: var(--mark, #868e96);
+	color: #ffffff;
+	font-size: 0.75rem;
+	white-space: nowrap;
+}
+
+/* While a stream is pointed at or drawn on, its label steps aside. */
+.tile.marking .tile-label {
+	opacity: 0.4;
 }
 
 .preview.mirror {

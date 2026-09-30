@@ -1,6 +1,7 @@
 import { CH } from '../protocol.js';
 import { button, h, icon, toast } from '../ui/dom.js';
 import { randomId, readJSON, wakeLock, writeJSON } from '../util.js';
+import { MarkLayer, MarkOutbox, readMark, readPeerId } from './stream-marks.js';
 
 const PREFS_KEY = 'peerkit.stream';
 const RESUME_KEY = 'peerkit.stream.resume'; // sessionStorage: what this tab shared before a reload
@@ -30,9 +31,14 @@ const CROWD = 2; // a phone's camera drops to 480p with more viewers than this: 
  *                      each member whose link comes up)
  *   stop  {id}         sender → everyone: it ended
  *   watch {id}         viewer → sender: call me again (a stream this viewer closed, or a call that gave up)
+ *   mark  {id, …}      a viewer's pointer and strokes on a stream (app/tools/stream-marks.js): viewer → sender, and
+ *                      the sender passes them on to its other viewers with `by`; the sender's own Clear → its viewers
  * A viewer that closes a stream closes its call, which tells the sender (app/mediacall.js); the others keep it.
  * A dropped link ends the call; the viewer keeps the stream paused for GRACE, and the sender calls again with the
  * same id when the link is back. A viewer that has it closed closes that call again.
+ *
+ * Marks go through the sender because every viewer is linked to it, and it knows who watches: a member that closed
+ * the stream gets none. A web page can't draw on the sender's real screen, so it sees them on its preview only.
  */
 
 export default {
@@ -331,9 +337,15 @@ class StreamTool {
 		const preview = h('video', { class: 'preview', playsinline: true, autoplay: true, muted: true, disablepictureinpicture: true });
 		preview.muted = true;
 		preview.srcObject = stream;
-		const out = { id: randomId(4), kind, stream, preview, viewers: new Map(), rate: 0, limited: false, lowered: false, locked: false };
+		const marks = new MarkLayer(preview, {
+			whoOf: by => this.whoOf(by),
+			mirrored: () => preview.classList.contains('mirror'),
+			onChange: () => this.renderStats(),
+		});
+		const box = h('div', { class: 'preview-box', 'data-kind': kind }, preview, marks.el);
+		const out = { id: randomId(4), kind, stream, preview, box, marks, noted: false, viewers: new Map(), rate: 0, limited: false, lowered: false, locked: false };
 		this.outs.set(kind, out);
-		this.previews.append(preview); // appended, never moved: moving a video element pauses it
+		this.previews.append(box); // appended, never moved: moving a video element pauses it
 		for (const track of stream.getVideoTracks()) this.watchTrack(out, track);
 		this.lock(out);
 		this.resume = this.resume.filter(other => other !== kind);
@@ -366,6 +378,7 @@ class StreamTool {
 		call.on('close', () => {
 			if (out.viewers.get(member.peerId) !== viewer) return;
 			out.viewers.delete(member.peerId);
+			this.forgetMarks(out, member.peerId);
 			this.fitCamera(out);
 			this.render();
 		});
@@ -378,6 +391,7 @@ class StreamTool {
 		if (!viewer) return;
 		out.viewers.delete(peerId);
 		closeCall(viewer);
+		this.forgetMarks(out, peerId);
 		this.fitCamera(out);
 	}
 
@@ -391,7 +405,8 @@ class StreamTool {
 		stopTracks(out.stream);
 		this.unlock(out);
 		out.preview.srcObject = null;
-		out.preview.remove();
+		out.marks.destroy();
+		out.box.remove();
 		if (!keepResume) writeResume([...this.outs.keys()]);
 		if (!this.outs.size) {
 			clearInterval(this.statsTimer);
@@ -587,7 +602,70 @@ class StreamTool {
 				this.render();
 				break;
 			}
+			case 'mark': {
+				const mark = readMark(msg);
+				if (mark) this.onMark(id, mark, msg.by, member);
+				break;
+			}
 		}
+	}
+
+	// --- marks: pointers and strokes on a stream ---
+
+	/** Name and colour of whoever made a mark: a member, or this device. */
+	whoOf(by) {
+		const member = by === 'self' ? this.room.self : this.room.member(by);
+		return { name: member?.name ?? 'Someone', color: member?.color ?? '#868e96' };
+	}
+
+	onMark(id, mark, by, member) {
+		const out = [...this.outs.values()].find(o => o.id === id);
+		if (out) {
+			// A viewer's marks: shown on the preview, and passed on to the others watching.
+			if (!out.viewers.has(member.peerId)) return;
+			out.marks.apply(member.peerId, mark);
+			this.relayMark(out, { ...mark, by: member.peerId }, member.peerId);
+			if (out.kind === 'screen' && !out.noted && (mark.pt || mark.st)) {
+				out.noted = true;
+				toast('Viewers’ marks show on your preview here, not on your real screen');
+			}
+			return;
+		}
+		// From the sender: its own Clear, or a viewer's marks it passes on.
+		const inc = this.ins.get(id);
+		if (!inc || inc.from !== member.peerId || inc.state === 'closed' || inc.state === 'ended') return;
+		const author = by === undefined ? member.peerId : readPeerId(by);
+		if (!author || author === this.room.self.peerId) return;
+		inc.marks.apply(author, mark);
+	}
+
+	relayMark(out, mark, except = null) {
+		for (const peerId of out.viewers.keys()) if (peerId !== except) this.room.send(CH.STREAM, { type: 'mark', id: out.id, ...mark }, peerId);
+	}
+
+	/** A viewer went: its pointer goes, here and on the others. */
+	forgetMarks(out, peerId) {
+		if (!out.marks.pointers.has(peerId)) return;
+		out.marks.unpoint(peerId);
+		this.relayMark(out, { pt: null, by: peerId });
+	}
+
+	clearOutgoing(out) {
+		out.marks.clear();
+		this.relayMark(out, { clear: true });
+	}
+
+	setMarkMode(inc, mode) {
+		inc.outbox ??= new MarkOutbox(mark => {
+			if (this.ins.get(inc.id) === inc && this.room.member(inc.from)) this.room.send(CH.STREAM, { type: 'mark', id: inc.id, ...mark }, inc.from);
+		});
+		inc.marks.setMode(inc.marks.mode === mode ? null : mode, inc.outbox);
+		this.render();
+	}
+
+	clearIncoming(inc) {
+		inc.marks.clear();
+		inc.outbox?.clear();
 	}
 
 	/** Announced on the control channel, just before the call. */
@@ -689,6 +767,7 @@ class StreamTool {
 			return;
 		}
 		inc.state = 'paused';
+		inc.marks.reset();
 		closeCall(inc);
 		inc.timer = setTimeout(() => {
 			if (this.ins.get(inc.id) === inc && inc.state === 'paused') this.endIncoming(inc);
@@ -729,6 +808,8 @@ class StreamTool {
 
 	/** Ends what plays, keeps the tile. */
 	release(inc) {
+		inc.marks.reset();
+		inc.outbox?.destroy();
 		inc.unfollow?.();
 		clearTimeout(inc.timer);
 		inc.timer = null;
@@ -746,6 +827,7 @@ class StreamTool {
 		this.ins.delete(inc.id);
 		inc.panel?.close();
 		inc.panel = null;
+		inc.marks.destroy();
 		inc.tile.remove();
 		this.render();
 	}
@@ -759,7 +841,13 @@ class StreamTool {
 		inc.soundBtn = button('Tap for sound', 'volume-x', () => this.setSound(true), 'btn primary sound-btn');
 		inc.actions = h('div', { class: 'stage-actions' });
 		inc.label = h('div', { class: 'tile-label' });
-		inc.tile = h('div', { class: 'tile', 'data-stream': inc.id }, inc.video, inc.message, inc.soundBtn, inc.actions, inc.label);
+		inc.marks = new MarkLayer(inc.video, { whoOf: by => this.whoOf(by), onChange: () => this.renderTile(inc, this.focusId()) });
+		inc.outbox = null;
+		// Kept, not made again at every render: a button replaced between press and release loses its click.
+		inc.pointBtn = iconButton('pointer', 'Point', () => this.setMarkMode(inc, 'point'), { pressed: false });
+		inc.drawBtn = iconButton('pencil', 'Draw', () => this.setMarkMode(inc, 'draw'), { pressed: false });
+		inc.clearBtn = iconButton('eraser', 'Clear marks', () => this.clearIncoming(inc));
+		inc.tile = h('div', { class: 'tile', 'data-stream': inc.id }, inc.video, inc.marks.el, inc.message, inc.soundBtn, inc.actions, inc.label);
 		// A tap on the picture shows it large in the grid, and a second tap goes back.
 		inc.video.addEventListener('click', () => this.toggleFocus(inc));
 		for (const type of ['enterpictureinpicture', 'leavepictureinpicture']) inc.video.addEventListener(type, () => this.render());
@@ -796,7 +884,7 @@ class StreamTool {
 	}
 
 	toggleFocus(inc) {
-		if (inc.panel?.open) return;
+		if (inc.panel?.open || inc.marks.mode) return;
 		this.focused = this.focused === inc.id ? null : inc.id;
 		this.render();
 	}
@@ -871,11 +959,17 @@ class StreamTool {
 
 	// --- rendering ---
 
+	/** The stream shown large in the grid, if any. */
+	focusId() {
+		const inGrid = [...this.ins.values()].filter(inc => inc.state !== 'closed' && !inc.panel?.open);
+		if (this.focused && !inGrid.some(inc => inc.id === this.focused)) this.focused = null;
+		return inGrid.length > 1 ? this.focused : null;
+	}
+
 	render() {
 		const incs = [...this.ins.values()];
 		const inGrid = incs.filter(inc => inc.state !== 'closed' && !inc.panel?.open);
-		if (this.focused && !inGrid.some(inc => inc.id === this.focused)) this.focused = null;
-		const focus = inGrid.length > 1 ? this.focused : null;
+		const focus = this.focusId();
 
 		this.el.classList.toggle('has-remote', inGrid.length > 0);
 		this.el.classList.toggle('has-preview', this.outs.size > 0);
@@ -908,8 +1002,15 @@ class StreamTool {
 		inc.soundBtn.hidden = !(hasAudio && !this.soundOn);
 
 		inc.actions.hidden = inc.state === 'closed';
+		if (!playing && inc.marks.mode) inc.marks.setMode(null);
+		inc.pointBtn.setAttribute('aria-pressed', String(inc.marks.mode === 'point'));
+		inc.drawBtn.setAttribute('aria-pressed', String(inc.marks.mode === 'draw'));
+		inc.tile.classList.toggle('marking', Boolean(inc.marks.mode));
 		const fullscreen = document.fullscreenElement === inc.tile;
 		inc.actions.replaceChildren(...[
+			playing && inc.pointBtn,
+			playing && inc.drawBtn,
+			playing && inc.marks.hasStrokes && inc.clearBtn,
 			hasAudio && this.soundOn && iconButton(inc.muted ? 'volume-x' : 'volume', inc.muted ? 'Unmute' : 'Mute', () => this.toggleMute(inc), { pressed: inc.muted }),
 			playing && document.pictureInPictureEnabled && iconButton('pip', 'Picture-in-picture', () => this.togglePip(inc)),
 			playing && inc.tile.requestFullscreen && iconButton(fullscreen ? 'minimize' : 'maximize', fullscreen ? 'Exit full screen' : 'Full screen', () => this.toggleFullscreen(inc)),
@@ -1007,7 +1108,8 @@ class StreamTool {
 					onchange: e => this.setResolution(e.target.value),
 				}, Object.keys(RESOLUTIONS).map(res => h('option', { value: res, selected: res === this.prefs.res }, res))));
 			}
-			items.push(button('Stop', 'stop', () => this.stopOutgoing(out.kind), 'btn small danger'));
+			out.clearBtn = iconButton('eraser', 'Clear marks', () => this.clearOutgoing(out));
+			items.push(out.clearBtn, button('Stop', 'stop', () => this.stopOutgoing(out.kind), 'btn small danger'));
 			rows.push(h('div', { class: 'stream-out', 'data-kind': out.kind }, ...items));
 		}
 
@@ -1041,6 +1143,7 @@ class StreamTool {
 			const warning = out.limited ? 'Your upload can’t keep up: the picture is made softer' : '';
 			if (out.warning.textContent !== warning) out.warning.textContent = warning;
 			out.warning.hidden = !warning;
+			out.clearBtn.hidden = !out.marks.hasStrokes;
 		}
 	}
 }
