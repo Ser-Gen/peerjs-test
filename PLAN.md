@@ -806,6 +806,27 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - Host-side API for games: `session.input.on('state', (slot, state) => …)` plus a `getPad(slot)` snapshot shaped like a `Gamepad` object.
 - In a room, the "host" is the member whose device runs the game or tool, and any other member can send it input. This is the remote control of a PeerKit tool from the rooms decisions; the operating system itself is never controlled.
 
+**As built** (2026-09-30, app 0.14.0, `PROTOCOL_VERSION` 8)
+- **One Controller tool** (`app/tools/controller/`, tool id `controller`, a fifth tab on phones and a panel in the main area on a wide screen) with two views at the top: **Controller** (this device is a pad) and **Monitor** (this device takes input). A phone opens on Controller, a laptop on Monitor; the choice is remembered in `peerkit.controller`.
+- **Controller**: **Send to** lists the members whose Monitor is open (the one chosen before, else the first), **Layout** is NES pad or Motion, and **Start** opens the pad full screen, in landscape, with the screen kept on. The top bar shows the host, the latency and Stop.
+  - NES pad: a D-pad with diagonals (a thumb in its middle presses nothing), Select, Start, B and A. Every finger is followed on its own, a thumb can slide from one button to the next, and one that lands up to 14 px beside a button still presses it. Each press vibrates briefly.
+  - Motion: one big trigger and the phone's orientation, from `AbsoluteOrientationSensor` at 60 Hz, or `deviceorientation` turned by the screen's angle. **Recenter** makes the way the phone points now read as straight ahead.
+  - A gamepad plugged into the phone goes along while playing, as a pad of its own.
+  - The pad stops by itself when its host leaves or closes its Monitor, and says so.
+- **Monitor**: a card per pad, as "Player N" with the member's colour and name: all 17 buttons lit as they are pressed, both sticks, a phone drawn in 3D that turns with a Motion pad, the latency (half the round trip of the input channel) and messages per second, faded after 3 s without input. A new pad marks the tab when it's out of sight.
+- **Messages** (`input.js`, ch `input`): `host {on}`, `state {slot, seq, t, buttons, down, axes, quat?, rtt?}`, `leave {slot}` and `echo {slot, t}`. Buttons and axes follow the Standard Gamepad mapping (NES B = 0, A = 1, Select 8, Start 9, the D-pad 12–15; the trigger is 7).
+  - `state` is sent on every change, at most 60 a second per pad, and again every 0.5 s. It goes over the **fast channel**, and a message that changes a button goes over ctl as well.
+  - `down` holds the buttons pressed since the previous message, so the host counts a press once whichever copy arrives first. A press whose copy comes after its release is still a tap: press and release together.
+- **The fast channel** (`app/room.js`): an unordered channel that never resends (`maxRetransmits: 0`), negotiated with a fixed id on the RTCPeerConnection the link's ctl connection already has, so it needs no signaling and no new connection. `room.sendFast(ch, msg, to)` sends on it and falls back to ctl where a browser has none; what arrives is `msg:<ch>` like any message, and `sys` and `rtc` are never taken from it.
+- **Host side for games**: `InputHub.of(room)` (`take()` makes this device a host until released) with the events `pads`, `state`, `press` and `release`, and `getPad(slot)`, a snapshot shaped like a `Gamepad` (`mapping: 'standard'`, buttons with `pressed`/`value`, `axes`) plus `orientation` and the member. A pad keeps its slot by device and pad, so a phone that reloads comes back as the same player.
+- No new protocol number: a device without the tool never says it takes input, so nothing is sent to it.
+- Differences from the plan:
+  - One tool with Controller and Monitor views rather than two tools, so a phone has five tabs, not six.
+  - The unreliable channel is on the link's own connection rather than a separate DataConnection: another peerjs connection would be negotiated through the server, which media calls stopped relying on in 0.13.5.
+  - The host API is `InputHub` with `on('state', (slot, pad))` rather than `session.input`.
+  - The latency is measured over the input path itself (the host echoes the controller's clock), not from the clocks of two devices.
+- Tests: `node test/run.mjs controller` (73 checks) runs a laptop's Monitor, a phone and a tablet as controllers and a headless member on the fake network, where the fast channel can lose messages or be missing. It checks two thumbs, diagonals, sliding between buttons, a tap while every fast message is lost, a press counted once over both channels, a gamepad, Motion with Recenter, at most 60 messages a second from 200 readings, two hosts, a host that stops or leaves, forged input, and the host's handling of each message. The app test opens the Controller tab and sees a member's pad. Checked in Node, not in a browser.
+
 **Checklist**
 - [ ] Phone NES layout in landscape: pressing D-pad/A/B lights them instantly on the laptop monitor.
 - [ ] Pressing two buttons with two thumbs registers both.

@@ -2411,3 +2411,372 @@ textarea.input {
 		transform: translateY(4px);
 	}
 }
+
+/* --- Controller (app/tools/controller/) --- */
+
+.tool.controller {
+	overflow-y: auto;
+}
+
+.controller-body {
+	width: 100%;
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+	max-width: 56rem;
+	margin: 0 auto;
+	padding: 1rem;
+}
+
+.controller-setup {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+}
+
+.controller-setup h3 {
+	margin: 0.5rem 0 0;
+	color: var(--muted);
+	font-size: 0.8rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.controller-hosts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+}
+
+.controller-hosts:empty {
+	display: none;
+}
+
+.host-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	min-height: 40px;
+	padding: 0 0.9rem;
+	border: 2px solid var(--border);
+	border-radius: 999px;
+	background: var(--surface);
+	color: var(--text);
+	font: inherit;
+	cursor: pointer;
+}
+
+.host-chip[aria-pressed="true"] {
+	border-color: var(--accent);
+	font-weight: 600;
+}
+
+.host-chip .dot,
+.mon-card header .dot {
+	width: 0.65rem;
+	height: 0.65rem;
+	border-radius: 50%;
+	background: var(--member, var(--muted));
+	flex: none;
+}
+
+.controller-setup > .btn.primary {
+	margin-top: 0.5rem;
+}
+
+/* The pad while playing: full screen, dark, every touch its own. */
+.pad-play {
+	position: fixed;
+	inset: 0;
+	z-index: 60;
+	display: flex;
+	flex-direction: column;
+	background: #101318;
+	color: #e8ebf0;
+	touch-action: none;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
+}
+
+.pad-top {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	padding: calc(0.5rem + env(safe-area-inset-top)) calc(0.75rem + env(safe-area-inset-right)) 0.5rem calc(0.75rem + env(safe-area-inset-left));
+	font-size: 0.875rem;
+}
+
+.pad-host::before {
+	content: "";
+	display: inline-block;
+	width: 0.6rem;
+	height: 0.6rem;
+	margin-right: 0.4rem;
+	border-radius: 50%;
+	background: var(--member);
+}
+
+.pad-latency {
+	flex: 1;
+	color: #98a2b3;
+}
+
+.pad-top-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.35rem;
+	min-width: 40px;
+	min-height: 40px;
+	padding: 0 0.6rem;
+	border: 1px solid #2b313c;
+	border-radius: 10px;
+	background: #181c23;
+	color: inherit;
+	font: inherit;
+}
+
+.pad-surface {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 1rem calc(1.5rem + env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)) calc(1.5rem + env(safe-area-inset-left));
+}
+
+.pad-left,
+.pad-right,
+.pad-middle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.pad-middle {
+	gap: 1rem;
+	align-self: flex-end;
+	margin-bottom: 8vmin;
+}
+
+.pad-right {
+	gap: 5vmin;
+	transform: rotate(-20deg);
+}
+
+.pad-dpad {
+	position: relative;
+	width: min(52vmin, 16rem);
+	aspect-ratio: 1;
+	border-radius: 50%;
+	background: #181c23;
+}
+
+.pad-arrow {
+	position: absolute;
+	width: 33%;
+	height: 33%;
+	border-radius: 8px;
+	background: #2b313c;
+}
+
+.pad-arrow.up { left: 33.5%; top: 4%; }
+.pad-arrow.down { left: 33.5%; bottom: 4%; }
+.pad-arrow.left { top: 33.5%; left: 4%; }
+.pad-arrow.right { top: 33.5%; right: 4%; }
+
+.pad-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: #2b313c;
+	font-weight: 700;
+}
+
+.pad-btn.round {
+	width: min(24vmin, 7.5rem);
+	aspect-ratio: 1;
+	border-radius: 50%;
+	background: #b02a37;
+	font-size: 1.4rem;
+}
+
+.pad-btn.small {
+	min-width: 5rem;
+	min-height: 2.25rem;
+	padding: 0 0.75rem;
+	border-radius: 999px;
+	font-size: 0.8rem;
+	font-weight: 600;
+}
+
+.pad-arrow.on,
+.pad-btn.on {
+	background: #5b8cff;
+}
+
+.pad-btn.round.on {
+	background: #ff6b6b;
+	transform: scale(0.94);
+}
+
+.pad-motion {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 1rem;
+}
+
+.pad-btn.trigger {
+	width: min(100%, 36rem);
+	height: min(55vh, 20rem);
+	border-radius: 28px;
+	font-size: 1.5rem;
+}
+
+.pad-motion-status {
+	margin: 0;
+	color: #98a2b3;
+	font-size: 0.875rem;
+	text-align: center;
+}
+
+/* The Monitor */
+
+.monitor-empty {
+	text-align: center;
+}
+
+.monitor-pads {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+	gap: 1rem;
+}
+
+.mon-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+	padding: 0.9rem;
+	border: 1px solid var(--border);
+	border-top: 4px solid var(--member, var(--border));
+	border-radius: 12px;
+	background: var(--surface);
+}
+
+.mon-card.quiet {
+	opacity: 0.6;
+}
+
+.mon-card header {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	flex-wrap: wrap;
+}
+
+.mon-kind,
+.mon-stats {
+	color: var(--muted);
+	font-size: 0.8rem;
+}
+
+.mon-stats {
+	margin-left: auto;
+	font-variant-numeric: tabular-nums;
+}
+
+.mon-buttons {
+	display: grid;
+	grid-template-columns: repeat(6, 1fr);
+	gap: 0.35rem;
+}
+
+.mon-btn {
+	padding: 0.3rem 0;
+	border-radius: 6px;
+	background: var(--surface-2);
+	color: var(--muted);
+	font-size: 0.7rem;
+	text-align: center;
+}
+
+.mon-btn.on {
+	background: var(--accent);
+	color: var(--accent-text);
+	font-weight: 600;
+}
+
+.mon-axes {
+	display: flex;
+	gap: 1rem;
+}
+
+.mon-stick {
+	position: relative;
+	width: 4rem;
+	aspect-ratio: 1;
+	border-radius: 50%;
+	background: var(--surface-2);
+}
+
+.mon-dot {
+	position: absolute;
+	left: 37.5%;
+	top: 37.5%;
+	width: 25%;
+	height: 25%;
+	border-radius: 50%;
+	background: var(--accent);
+}
+
+.mon-motion {
+	display: flex;
+	justify-content: center;
+	padding: 0.5rem 0;
+}
+
+.mon-cube-stage {
+	width: 8rem;
+	height: 8rem;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	perspective: 500px;
+}
+
+/* A phone held flat: 3 × 6 rem, 0.6 rem thick, the screen towards the viewer. */
+.mon-cube {
+	position: relative;
+	width: 3rem;
+	height: 6rem;
+	transform-style: preserve-3d;
+}
+
+.mon-cube .face {
+	position: absolute;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid var(--border);
+	background: color-mix(in srgb, var(--member, var(--accent)) 35%, var(--surface));
+	font-size: 0.6rem;
+	color: var(--text);
+	backface-visibility: hidden;
+}
+
+.mon-cube .front,
+.mon-cube .back { inset: 0; }
+.mon-cube .front { transform: translateZ(0.3rem); background: color-mix(in srgb, var(--member, var(--accent)) 70%, var(--surface)); }
+.mon-cube .back { transform: rotateY(180deg) translateZ(0.3rem); }
+.mon-cube .right,
+.mon-cube .left { top: 0; left: 1.2rem; width: 0.6rem; height: 6rem; }
+.mon-cube .right { transform: rotateY(90deg) translateZ(1.5rem); }
+.mon-cube .left { transform: rotateY(-90deg) translateZ(1.5rem); }
+.mon-cube .top,
+.mon-cube .bottom { left: 0; top: 2.7rem; width: 3rem; height: 0.6rem; }
+.mon-cube .top { transform: rotateX(90deg) translateZ(3rem); }
+.mon-cube .bottom { transform: rotateX(-90deg) translateZ(3rem); }

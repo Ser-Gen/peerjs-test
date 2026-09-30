@@ -30,6 +30,11 @@ const MAX_GONE = 200;
 const MAX_EARLY = 1000; // tool messages kept between authentication and the link being up
 export const MAX_MEMBERS = 8;
 const MAX_CALLS = 8; // media calls with one member at a time (voice and a stream need two)
+// The fast channel: unordered and never resent, for input that is stale by the time a resend would arrive.
+// Negotiated (both ends open it with this id) on the ctl connection's RTCPeerConnection, so it needs no signaling
+// and no new connection; peerjs's own channel there is 0 or 1.
+const FAST_CHANNEL = { negotiated: true, id: 16, ordered: false, maxRetransmits: 0 };
+const MAX_FAST = 2048; // characters in one fast message
 
 // Backpressure for the binary channel: pause above HIGH, resume below LOW.
 const HIGH_WATER = 2 * 1024 * 1024;
@@ -127,6 +132,7 @@ class Link {
 		this.member = null; // { peerId, deviceId, name, color, rtt, route, anchor } once authenticated
 		this.remotePeers = new Set(); // its own direct links
 		this.early = [];
+		this.fast = null; // the unreliable RTCDataChannel, once up
 		this.startedAt = Date.now();
 		this.lastSeen = Date.now();
 		this.routeAt = 0;
@@ -262,11 +268,50 @@ class Link {
 				if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') this.close('lost');
 			});
 		}
+		this.openFast();
 		this.room._onLinkUp(this);
 		for (const msg of this.early.splice(0)) {
 			if (this.state === 'up') this.room._onLinkMessage(this, msg);
 		}
 		this.ping();
+	}
+
+	/** The fast channel on the ctl connection's peer connection; without one, sendFast falls back to ctl. */
+	openFast() {
+		const pc = this.ctl?.peerConnection;
+		if (typeof pc?.createDataChannel !== 'function') return;
+		try {
+			const channel = pc.createDataChannel('fast', FAST_CHANNEL);
+			channel.onmessage = event => {
+				if (this.state !== 'up' || typeof event.data !== 'string' || event.data.length > MAX_FAST) return;
+				let msg;
+				try {
+					msg = JSON.parse(event.data);
+				} catch {
+					return;
+				}
+				// Only tool channels: links, signaling and the handshake stay on ctl.
+				if (!msg || typeof msg !== 'object' || typeof msg.ch !== 'string' || msg.ch === CH.SYS || msg.ch === CH.RTC) return;
+				this.lastSeen = Date.now();
+				this.room._onLinkMessage(this, msg);
+			};
+			this.fast = channel;
+		} catch (err) {
+			console.warn('[peerkit] no fast channel', err);
+		}
+	}
+
+	sendFast(ch, msg) {
+		const channel = this.fast;
+		if (channel?.readyState !== 'open' || this.state !== 'up') return this.send(ch, msg);
+		try {
+			const text = JSON.stringify({ ...msg, ch });
+			if (text.length > MAX_FAST) return false;
+			channel.send(text);
+			return true;
+		} catch {
+			return this.send(ch, msg);
+		}
 	}
 
 	ping() {
@@ -298,6 +343,15 @@ class Link {
 		clearTimeout(this.timer);
 		clearInterval(this.pingTimer);
 		this.early = [];
+		if (this.fast) {
+			this.fast.onmessage = null;
+			try {
+				this.fast.close();
+			} catch {
+				// closed with its connection
+			}
+			this.fast = null;
+		}
 		const conns = [this.ctl, this.file];
 		if (linger) setTimeout(() => conns.forEach(closeConn), linger);
 		else conns.forEach(closeConn);
@@ -452,6 +506,15 @@ export class Room extends Emitter {
 		let sent = 0;
 		for (const link of this._upLinks(to)) if (link.send(ch, msg)) sent++;
 		return sent;
+	}
+
+	/**
+	 * Send to one member over the fast channel: unordered, and lost rather than resent (input that a newer message
+	 * replaces). Falls back to ctl where there is none. Arrives as `msg:<ch>` like any message.
+	 */
+	sendFast(ch, msg, to) {
+		const link = this._upLinks(to)[0];
+		return Boolean(to && link?.sendFast(ch, msg));
 	}
 
 	/** Send one binary message to a member, waiting first if its channel buffer is full. Rejects if the link drops. */

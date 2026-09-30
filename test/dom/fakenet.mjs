@@ -15,6 +15,9 @@ export class Em {
 }
 
 export const net = { peers: new Map(), silent: new Set(), mitm: false, blocked: () => false, all: new Set() };
+// The links' fast channel (a negotiated RTCDataChannel on the ctl connection): `drop(from)` loses a message on the
+// way, `off` makes createDataChannel throw, as a browser without one would, and `sent` counts what went through it.
+export const fast = { drop: () => false, off: false, sent: 0 };
 const cert = () => `sha-256 ${Array.from({ length: 32 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0').toUpperCase()).join(':')}`;
 const isSilent = peer => net.silent.has(peer.device);
 
@@ -58,6 +61,36 @@ class FakeConn extends Em {
 		const other = this.other;
 		if (other && !other.closed && !isSilent(this.owner) && !isSilent(other.owner)) setTimeout(() => other.close(), 2);
 	}
+}
+
+/** createDataChannel on a connection's peer connection: negotiated channels, paired with the other end's by id. */
+function fastChannels(conn, other) {
+	const channels = (conn.peerConnection.channels = new Map());
+	conn.peerConnection.createDataChannel = (label, { negotiated, id } = {}) => {
+		if (fast.off || !negotiated) throw new Error('no data channels here');
+		const channel = {
+			label,
+			id,
+			onmessage: null,
+			get readyState() {
+				return this.closed || conn.closed ? 'closed' : conn.open ? 'open' : 'connecting';
+			},
+			send(text) {
+				if (this.readyState !== 'open') throw new Error('not open');
+				if (isSilent(conn.owner) || isSilent(other.owner) || fast.drop(conn.owner)) return;
+				fast.sent++;
+				setTimeout(() => {
+					const there = other.peerConnection?.channels?.get(id);
+					if (there?.readyState === 'open' && !isSilent(other.owner)) there.onmessage?.({ data: text });
+				}, 1);
+			},
+			close() {
+				this.closed = true;
+			},
+		};
+		channels.set(id, channel);
+		return channel;
+	};
 }
 
 export class FakePeer extends Em {
@@ -107,6 +140,8 @@ export class FakePeer extends Em {
 			const fake = net.mitm ? cert() : null;
 			local.peerConnection = { localDescription: { sdp: `a=fingerprint:${this.cert}` }, remoteDescription: { sdp: `a=fingerprint:${fake ?? target.cert}` }, addEventListener() {} };
 			remote.peerConnection = { localDescription: { sdp: `a=fingerprint:${target.cert}` }, remoteDescription: { sdp: `a=fingerprint:${fake ?? this.cert}` }, addEventListener() {} };
+			fastChannels(local, remote);
+			fastChannels(remote, local);
 			target.emit('connection', remote);
 			setTimeout(() => {
 				if (local.closed || remote.closed) return;

@@ -11,6 +11,7 @@ export const CH = {
 	ROOM: 'room', // the room document: the chat and its file list, Yjs sync like DOC (app/roomdoc.js)
 	BOARD: 'board', // the whiteboard's boards, Yjs sync and awareness like DOC (app/tools/whiteboard/)
 	RTC: 'rtc', // media calls: offer, answer, ICE candidates and close, over the link (app/mediacall.js)
+	INPUT: 'input', // controllers: pads, motion and who takes them, mostly over the fast channel (app/tools/controller/input.js)
 };
 
 /*
@@ -55,12 +56,14 @@ export const CH = {
  * Version 6 moved the chat into the room document (ch: 'room'): a version-5 device sends text as
  * `transfer` messages that a version-6 device no longer reads, so the two refuse to link.
  * The whiteboard's channel ('board') came later without a new version: a device that has no whiteboard yet
- * ignores the channel, and syncs the boards once it has one.
+ * ignores the channel, and syncs the boards once it has one. So did the controllers' ('input'): a device without
+ * them never says it takes input, so nothing is sent to it, and the fast channel it doesn't open stays unused.
  */
 
 // peerjs DataConnection labels.
 export const LABEL = {
 	CTL: 'ctl', // JSON, reliable: all control messages
 	FILE: 'file', // raw binary, reliable: file chunks framed as [u32 transfer id][bytes]
+	// (and on the ctl connection's peer connection, a negotiated channel with no label of peerjs's: the fast one, app/room.js)
 	ENTRY: 'entry', // JSON, reliable: a newcomer's handshake with the anchor
 };

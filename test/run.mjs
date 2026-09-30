@@ -1,6 +1,6 @@
 // Runs the Node tests. Usage:
 //   node test/run.mjs                 every test once
-//   node test/run.mjs room            one test by name (room | editor-sync | voice | pwa | vendor | app | start | desktop | editor | monaco | chat | stream | whiteboard)
+//   node test/run.mjs room            one test by name (room | editor-sync | voice | pwa | vendor | app | start | desktop | editor | monaco | chat | stream | controller | whiteboard)
 //   node test/run.mjs room --times 20 repeat it, which is how the random anchor handover is checked
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -22,6 +22,7 @@ const TESTS = [
 	{ name: 'monaco', file: 'dom/monaco-test.mjs', args: [], jsdom: true, about: 'the Editor in Monaco, with a member in CodeMirror, and switching between them' },
 	{ name: 'chat', file: 'dom/chat-test.mjs', args: [], jsdom: true, about: 'the Chat: history, kept files, the viewer, the storage limit' },
 	{ name: 'stream', file: 'dom/stream-test.mjs', args: [], jsdom: true, about: 'the Stream tool: streams to the whole room, closing one, the upload, a link that drops' },
+	{ name: 'controller', file: 'dom/controller-test.mjs', args: [], jsdom: true, about: 'the Controller: a phone as a pad for a Monitor, taps under loss, motion, gamepads' },
 	{ name: 'whiteboard', file: 'dom/whiteboard-test.mjs', args: [], jsdom: true, about: 'the Whiteboard: drawing together, undo, images from the clipboard, export' },
 ];
 
