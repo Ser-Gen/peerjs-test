@@ -159,6 +159,9 @@ export class FakeTrack {
 	getSettings() {
 		return { ...this.settings };
 	}
+	async applyConstraints(constraints) {
+		this.constraints = constraints;
+	}
 	stop() {
 		this.readyState = 'ended';
 	}
@@ -271,7 +274,7 @@ let pcCount = 0;
  * objects the other side added) and, once both have both descriptions, connects ICE. `rtc.block` stops ICE
  * from ever connecting between two connections, so a failure can be simulated.
  */
-export const rtc = { block: () => false, made: [] };
+export const rtc = { block: () => false, made: [], stats: () => ({}) };
 
 export class FakeRTCPeerConnection {
 	constructor(config = {}) {
@@ -292,13 +295,29 @@ export class FakeRTCPeerConnection {
 		rtc.made.push(this);
 	}
 	addTrack(track, stream) {
-		const sender = { track, async replaceTrack(next) { sender.track = next; } };
+		const sender = {
+			track,
+			params: { encodings: [{}] },
+			async replaceTrack(next) {
+				sender.track = next;
+			},
+			getParameters: () => JSON.parse(JSON.stringify(sender.params)),
+			async setParameters(params) {
+				sender.params = JSON.parse(JSON.stringify(params));
+			},
+		};
 		this.senders.push(sender);
 		if (stream && !this.streams.includes(stream)) this.streams.push(stream);
 		return sender;
 	}
 	getSenders() {
 		return [...this.senders];
+	}
+	/** An outbound-rtp entry per sender; `rtc.stats(pc, sender)` fills in bytesSent, qualityLimitationReason and so on. */
+	async getStats() {
+		const report = new Map();
+		this.senders.forEach((sender, i) => report.set(`out-${i}`, { type: 'outbound-rtp', kind: sender.track?.kind, bytesSent: 0, qualityLimitationReason: 'none', ...rtc.stats(this, sender) }));
+		return report;
 	}
 	async createOffer(options = {}) {
 		return { type: 'offer', sdp: `v=0\r\na=fake-pc:${this.id}\r\na=restart:${options.iceRestart ? 1 : 0}\r\n` };
@@ -353,6 +372,7 @@ export class FakeRTCPeerConnection {
 		this.signalingState = 'closed';
 		this.iceConnectionState = 'closed';
 		this.connectionState = 'closed';
-		pcs.delete(this.id);
+		// Still found by its description: an answer can arrive after the end that made it has closed, which a real
+		// connection doesn't mind.
 	}
 }

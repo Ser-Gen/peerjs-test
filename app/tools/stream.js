@@ -1,31 +1,38 @@
 import { CH } from '../protocol.js';
-import { button, h, icon, openDialog, toast } from '../ui/dom.js';
+import { button, h, icon, toast } from '../ui/dom.js';
 import { randomId, readJSON, wakeLock, writeJSON } from '../util.js';
 
 const PREFS_KEY = 'peerkit.stream';
-const RESUME_KEY = 'peerkit.stream.resume'; // sessionStorage: what this tab shared before a reload or a long drop
-const GRACE = 30000; // how long a stream is kept for the viewer whose link dropped, before anyone who arrives gets it
+const RESUME_KEY = 'peerkit.stream.resume'; // sessionStorage: what this tab shared before a reload
+const GRACE = 30000; // how long a viewer keeps a stream whose sender's link dropped, waiting for it to come back
 const RESOLUTIONS = { '480p': [854, 480], '720p': [1280, 720], '1080p': [1920, 1080] };
 const AUDIO = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 // System audio is music and video sound, not a voice: no processing. restrictOwnAudio (where supported)
 // keeps this page's own playback, such as the other device's camera sound, out of the capture.
 const SCREEN_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true };
 const MUSIC_BITRATE = 256000;
-const KIND_NOUN = { camera: 'camera', screen: 'shared screen' };
+const KINDS = ['camera', 'screen'];
+const KIND_NOUN = { camera: 'camera', screen: 'screen' };
+const MAX_INCOMING = 16; // streams shown at once; 8 members with a camera and a screen each
+const STATS_EVERY = 2000;
+const MIN_BITRATE = 150000; // a cap never goes below this; the congestion control can still go lower on its own
+const TOP_BITRATE = { camera: 2500000, screen: 4000000 }; // a cap raised past this is taken off
+const RAISE_AFTER = 5; // samples without a bandwidth limit before a lowered cap goes up again
+const CROWD = 2; // a phone's camera drops to 480p with more viewers than this: every call is an encoder of its own
 
 /*
- * For now a stream goes to one member of the room (the choice is made when it starts). Started in an empty
- * room it waits with no viewer, and the first member to arrive gets it.
+ * Streams go to the whole room. A member can share a camera and a screen at the same time; each goes to every
+ * other member over a media call of its own (app/mediacall.js, metadata {id, kind}), and the viewer answers
+ * without a stream. A member who arrives later gets the streams already running.
  *
- * Protocol (ch: 'stream'). Media goes over a media call (app/mediacall.js) with metadata {id, kind}; the
- * receiver answers without a stream. Start and stop are also sent on the control channel, so the viewer
- * knows what is coming before the call is up and why it ended.
- *   start {id, kind}   sender → receiver, just before the call
- *   stop  {id}         sender → receiver
- *   close {id}         receiver → sender: the viewer closed it, stop sending
- * After a dropped link the sender calls the same device again (its peer ID may be new after a reload)
- * with the same id; the receiver treats it as a resume. After GRACE the capture keeps running and goes
- * to whoever arrives first, as a stream started in an empty room does.
+ * Protocol (ch: 'stream'):
+ *   start {id, kind}   sender → a member: this stream is on, a call follows (to everyone when it starts, and to
+ *                      each member whose link comes up)
+ *   stop  {id}         sender → everyone: it ended
+ *   watch {id}         viewer → sender: call me again (a stream this viewer closed, or a call that gave up)
+ * A viewer that closes a stream closes its call, which tells the sender (app/mediacall.js); the others keep it.
+ * A dropped link ends the call; the viewer keeps the stream paused for GRACE, and the sender calls again with the
+ * same id when the link is back. A viewer that has it closed closes that call again.
  */
 
 export default {
@@ -49,23 +56,22 @@ function loadPrefs() {
 	return {
 		res: Object.hasOwn(RESOLUTIONS, raw?.res) ? raw.res : '720p',
 		mic: raw?.mic !== false,
-		// Phones usually show the other device what is in front of them.
+		// Phones usually show the others what is in front of them.
 		facing: raw?.facing === 'user' || raw?.facing === 'environment' ? raw.facing : coarse() ? 'environment' : 'user',
 	};
 }
 
 function readResume() {
 	try {
-		const kind = sessionStorage.getItem(RESUME_KEY);
-		return kind === 'camera' || kind === 'screen' ? kind : null;
+		return (sessionStorage.getItem(RESUME_KEY) ?? '').split(',').filter(kind => KINDS.includes(kind));
 	} catch {
-		return null;
+		return [];
 	}
 }
 
-function writeResume(kind) {
+function writeResume(kinds) {
 	try {
-		if (kind) sessionStorage.setItem(RESUME_KEY, kind);
+		if (kinds.length) sessionStorage.setItem(RESUME_KEY, kinds.join(','));
 		else sessionStorage.removeItem(RESUME_KEY);
 	} catch {
 		// the resume offer is a convenience
@@ -130,7 +136,9 @@ function musicSdp(sdp) {
 
 const callOptions = kind => (kind === 'screen' ? { sdpTransform: musicSdp } : {});
 
-const stopTracks = stream =>stream?.getTracks().forEach(track => track.stop());
+const stopTracks = stream => stream?.getTracks().forEach(track => track.stop());
+
+const readId = id => (typeof id === 'string' && /^[0-9a-z]{1,32}$/.test(id) ? id : null);
 
 function closeCall(item) {
 	const call = item.call;
@@ -154,30 +162,35 @@ function iconButton(name, label, onclick, { disabled = false, pressed = null } =
 	}, icon(name));
 }
 
+function formatRate(bps) {
+	return bps >= 1e6 ? `${(bps / 1e6).toFixed(1)} Mbit/s` : `${Math.round(bps / 1e3)} kbit/s`;
+}
+
+const videoSender = call => call?.peerConnection?.getSenders?.().find(sender => sender.track?.kind === 'video') ?? null;
+
 class StreamTool {
 	constructor(root, room, ctx) {
 		this.room = room;
 		this.ctx = ctx;
 		this.prefs = loadPrefs();
-		this.out = null; // { id, kind, to, toDevice, toName, stream, call, paused, timer, locked }
-		this.in = null; // { id, kind, from, fromName, call, stream, state: connecting | playing | paused | ended, timer, locked }
-		this.picker = null;
+		this.outs = new Map(); // kind → { id, kind, stream, preview, viewers: Map peerId → viewer, rate, limited, lowered, locked }
+		this.ins = new Map(); // id → { id, kind, from, fromDevice, fromName, call, stream, state, seen, muted, unfollow, timer, locked, tile, video, panel }
+		this.focused = null; // the id of the stream shown large in the grid
 		this.soundOn = false;
 		this.busy = false; // waiting for a capture prompt or a camera switch
 		this.cameraCount = 0;
 		this.resume = readResume();
+		this.statsTimer = null;
+		this.barKey = null;
 
-		this.remote = h('video', { class: 'remote', playsinline: true, autoplay: true, muted: true });
-		this.remote.muted = true;
-		this.preview = h('video', { class: 'preview', playsinline: true, autoplay: true, muted: true, disablepictureinpicture: true });
-		this.preview.muted = true;
+		this.grid = h('div', { class: 'stream-grid' });
+		this.previews = h('div', { class: 'previews' });
 		this.message = h('div', { class: 'stage-message' });
-		this.soundBtn = button('Tap for sound', 'volume-x', () => this.setSound(true), 'btn primary sound-btn');
-		this.stageActions = h('div', { class: 'stage-actions' });
-		this.stage = h('div', { class: 'stage' }, this.remote, this.message, this.soundBtn, this.stageActions, this.preview);
+		this.stage = h('div', { class: 'stage' }, this.grid, this.message, this.previews);
+		this.closedBar = h('div', { class: 'stream-closed' });
 		this.resumeBar = h('div', { class: 'stream-resume', role: 'status' });
 		this.bar = h('div', { class: 'stream-bar' });
-		this.el = h('div', { class: 'stream' }, this.stage, this.resumeBar, this.bar);
+		this.el = h('div', { class: 'stream' }, this.closedBar, this.stage, this.resumeBar, this.bar);
 		root.append(this.el);
 
 		this.onFullscreen = () => {
@@ -185,7 +198,6 @@ class StreamTool {
 			this.render();
 		};
 		document.addEventListener('fullscreenchange', this.onFullscreen);
-		for (const type of ['enterpictureinpicture', 'leavepictureinpicture']) this.remote.addEventListener(type, () => this.render());
 
 		this.unsubscribe = [
 			room.on(`msg:${CH.STREAM}`, (msg, member) => this.onMessage(msg, member)),
@@ -201,6 +213,11 @@ class StreamTool {
 				this.applyMic();
 				this.render();
 			}),
+			// Wide window or narrow: each stream gets a panel of its own, or a tile in the grid.
+			ctx?.onLayout?.(() => {
+				this.place();
+				this.render();
+			}),
 		].filter(Boolean);
 		this.render();
 	}
@@ -208,14 +225,14 @@ class StreamTool {
 	destroy() {
 		this.unsubscribe.forEach(fn => fn());
 		document.removeEventListener('fullscreenchange', this.onFullscreen);
-		this.picker?.close();
-		this.stopOutgoing({ keepResume: true });
-		this.dropIncoming();
+		for (const kind of [...this.outs.keys()]) this.stopOutgoing(kind, { keepResume: true });
+		for (const inc of [...this.ins.values()]) this.removeIncoming(inc);
+		clearInterval(this.statsTimer);
 		this.el.remove();
 	}
 
-	get connected() {
-		return this.room.members.length > 0;
+	get docked() {
+		return this.ctx?.docked?.() === true;
 	}
 
 	/** The room's voice carries this device's microphone; a camera stream then sends video only. */
@@ -225,76 +242,29 @@ class StreamTool {
 
 	applyMic() {
 		const on = this.prefs.mic && !this.voiceOn;
-		for (const track of this.out?.stream.getAudioTracks() ?? []) track.enabled = on;
+		for (const track of this.outs.get('camera')?.stream.getAudioTracks() ?? []) track.enabled = on;
 	}
 
 	onLinkUp(member) {
-		const out = this.out;
-		if (out?.paused && out.toDevice === member.deviceId) {
-			// The same device again, possibly with a new peer ID after a reload.
-			out.to = member.peerId;
-			this.resumeOutgoing();
-		} else if (out && !out.to) {
-			// Started with nobody here: the first one to arrive gets it.
-			out.to = member.peerId;
-			out.toDevice = member.deviceId;
-			out.toName = member.name;
-			this.callRemote(out);
-			toast(`Sharing with ${member.name}`);
-		}
+		// A newcomer, or a member back after a drop: it gets every stream this device is sending.
+		for (const out of this.outs.values()) this.offer(out, member);
 		this.render();
 	}
 
 	onLinkDown(member) {
-		// Links come back by themselves; keep the capture running meanwhile.
-		if (this.out && !this.out.paused && this.out.to === member.peerId) this.pauseOutgoing();
-		if (this.in && this.in.state !== 'ended' && this.in.from === member.peerId) this.pauseIncoming();
+		for (const out of this.outs.values()) this.dropViewer(out, member.peerId);
+		for (const inc of this.ins.values()) if (inc.from === member.peerId) this.pauseIncoming(inc);
 		this.render();
 	}
 
-	/**
-	 * Who gets the stream: nobody yet in an empty room, the only other member, or the one picked from a
-	 * list (a tap there counts as the user's gesture).
-	 */
-	chooseMember(kind, start) {
-		const members = this.room.members;
-		if (!members.length) {
-			start(null);
-			return;
-		}
-		if (members.length === 1) {
-			start(members[0]);
-			return;
-		}
-		this.picker?.close();
-		const dialog = (this.picker = openDialog(h('div', { class: 'sheet-body' },
-			h('h2', {}, kind === 'screen' ? 'Share your screen with' : 'Share your camera with'),
-			h('ul', { class: 'member-pick' }, members.map(member => h('li', {},
-				h('button', {
-					type: 'button',
-					class: 'member-pick-item',
-					style: `--who: ${member.color}`,
-					onclick: () => {
-						dialog.close();
-						if (this.room.member(member.peerId)) start(member);
-						else toast(`${member.name} left the room`);
-					},
-				}, member.name)))),
-			h('p', { class: 'hint' }, 'For now a stream goes to one person.'),
-			h('div', { class: 'actions end' }, button('Cancel', null, () => dialog.close(), 'btn ghost')))));
-		dialog.addEventListener('close', () => {
-			if (this.picker === dialog) this.picker = null;
-		});
-	}
-
-	/** A member renamed itself: the bar and the stage name the viewer and the sender as they are called now. */
+	/** A member renamed itself: tiles, panels and chips name the sender as it is called now. */
 	renameSelf() {
-		const out = this.out;
-		const viewer = out?.toDevice ? this.room.members.find(member => member.deviceId === out.toDevice) : null;
-		if (viewer) out.toName = viewer.name;
-		const inc = this.in;
-		const sender = inc ? this.room.member(inc.from) : null;
-		if (sender) inc.fromName = sender.name;
+		for (const inc of this.ins.values()) {
+			const sender = this.room.member(inc.from);
+			if (!sender || sender.name === inc.fromName) continue;
+			inc.fromName = sender.name;
+			inc.panel?.setTitle?.(this.titleOf(inc));
+		}
 	}
 
 	savePrefs(patch) {
@@ -304,16 +274,15 @@ class StreamTool {
 
 	// --- outgoing ---
 
-	async startCamera(member) {
+	async startCamera() {
 		if (this.busy) return;
 		this.busy = true;
 		this.render();
 		try {
 			const stream = await getCamera(this.prefs);
-			if (member && !this.room.member(member.peerId)) return stopTracks(stream);
 			stream.getVideoTracks()[0].contentHint = 'motion';
 			for (const track of stream.getAudioTracks()) track.enabled = this.prefs.mic && !this.voiceOn;
-			this.beginOutgoing('camera', stream, member);
+			this.beginOutgoing('camera', stream);
 			this.countCameras();
 		} catch (err) {
 			console.warn('[peerkit] camera failed', err);
@@ -324,17 +293,16 @@ class StreamTool {
 		}
 	}
 
-	async startScreen(member) {
+	async startScreen() {
 		if (this.busy) return;
 		this.busy = true;
 		this.render();
 		try {
 			// Nothing may be awaited before this call: it needs the click's user activation.
 			const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: SCREEN_AUDIO });
-			if (member && !this.room.member(member.peerId)) return stopTracks(stream);
 			stream.getVideoTracks()[0].contentHint = 'detail';
 			for (const track of stream.getAudioTracks()) track.contentHint = 'music';
-			this.beginOutgoing('screen', stream, member);
+			this.beginOutgoing('screen', stream);
 		} catch (err) {
 			// Cancelling the picker is a NotAllowedError too.
 			if (err?.name !== 'NotAllowedError') toast(mediaError(err, 'screen'));
@@ -342,6 +310,10 @@ class StreamTool {
 			this.busy = false;
 			this.render();
 		}
+	}
+
+	start(kind) {
+		return kind === 'screen' ? this.startScreen() : this.startCamera();
 	}
 
 	async countCameras() {
@@ -354,90 +326,82 @@ class StreamTool {
 		}
 	}
 
-	beginOutgoing(kind, stream, member) {
-		this.stopOutgoing();
-		const out = (this.out = {
-			id: randomId(4),
-			kind,
-			// Null while nobody is in the room: onLinkUp fills them in for whoever arrives first.
-			to: member?.peerId ?? null,
-			toDevice: member?.deviceId ?? null,
-			toName: member?.name ?? null,
-			stream,
-			call: null,
-			paused: false,
-			timer: null,
-			locked: false,
-		});
+	beginOutgoing(kind, stream) {
+		this.stopOutgoing(kind);
+		const preview = h('video', { class: 'preview', playsinline: true, autoplay: true, muted: true, disablepictureinpicture: true });
+		preview.muted = true;
+		preview.srcObject = stream;
+		const out = { id: randomId(4), kind, stream, preview, viewers: new Map(), rate: 0, limited: false, lowered: false, locked: false };
+		this.outs.set(kind, out);
+		this.previews.append(preview); // appended, never moved: moving a video element pauses it
 		for (const track of stream.getVideoTracks()) this.watchTrack(out, track);
 		this.lock(out);
-		this.resume = null;
-		writeResume(kind);
-		this.preview.srcObject = stream;
-		if (out.to) this.callRemote(out);
+		this.resume = this.resume.filter(other => other !== kind);
+		writeResume([...this.outs.keys()]);
+		// With nobody here yet it waits: onLinkUp gives it to whoever arrives.
+		for (const member of this.room.members) this.offer(out, member);
+		this.statsTimer ??= setInterval(() => this.sample(), STATS_EVERY);
 		this.render();
 	}
 
 	/** The browser's own "Stop sharing", an unplugged camera or revoked permission end the track. */
 	watchTrack(out, track) {
 		track.addEventListener('ended', () => {
-			if (this.out === out && out.stream.getVideoTracks().includes(track)) this.stopOutgoing();
+			if (this.outs.get(out.kind) === out && out.stream.getVideoTracks().includes(track)) this.stopOutgoing(out.kind);
 		});
 	}
 
-	callRemote(out) {
-		this.room.send(CH.STREAM, { type: 'start', id: out.id, kind: out.kind }, out.to);
-		const call = this.room.call(out.to, out.stream, { id: out.id, kind: out.kind }, callOptions(out.kind));
-		if (!call) {
-			toast('Could not start the stream: the connection to them is not ready');
-			this.stopOutgoing();
-			return;
-		}
-		out.call = call;
+	/** Tell a member the stream is on, and send it. */
+	offer(out, member) {
+		this.room.send(CH.STREAM, { type: 'start', id: out.id, kind: out.kind }, member.peerId);
+		this.callViewer(out, member);
+	}
+
+	callViewer(out, member) {
+		this.dropViewer(out, member.peerId);
+		const call = this.room.call(member.peerId, out.stream, { id: out.id, kind: out.kind }, callOptions(out.kind));
+		if (!call) return; // the link isn't up: link-up offers it again
+		const viewer = { peerId: member.peerId, call, bytes: 0, time: 0, rate: 0, cap: null, calm: 0 };
+		out.viewers.set(member.peerId, viewer);
 		call.on('close', () => {
-			if (out.call === call) out.call = null;
+			if (out.viewers.get(member.peerId) !== viewer) return;
+			out.viewers.delete(member.peerId);
+			this.fitCamera(out);
+			this.render();
 		});
 		call.on('error', err => console.warn('[peerkit] media call error', err));
+		this.fitCamera(out);
 	}
 
-	pauseOutgoing() {
-		const out = this.out;
-		out.paused = true;
-		closeCall(out);
-		out.timer = setTimeout(() => {
-			if (this.out !== out || !out.paused) return;
-			// The viewer is not back: keep the capture and give it to whoever arrives next, that device included.
-			// toName stays, so the bar can say who left.
-			out.timer = null;
-			out.paused = false;
-			out.to = null;
-			this.render();
-		}, GRACE);
+	dropViewer(out, peerId) {
+		const viewer = out.viewers.get(peerId);
+		if (!viewer) return;
+		out.viewers.delete(peerId);
+		closeCall(viewer);
+		this.fitCamera(out);
 	}
 
-	resumeOutgoing() {
-		const out = this.out;
-		clearTimeout(out.timer);
-		out.paused = false;
-		this.callRemote(out);
-	}
-
-	stopOutgoing({ notify = true, keepResume = false } = {}) {
-		const out = this.out;
+	stopOutgoing(kind, { notify = true, keepResume = false } = {}) {
+		const out = this.outs.get(kind);
 		if (!out) return;
-		this.out = null;
-		clearTimeout(out.timer);
-		if (notify && out.to) this.room.send(CH.STREAM, { type: 'stop', id: out.id }, out.to);
-		closeCall(out);
+		this.outs.delete(kind);
+		if (notify) this.room.send(CH.STREAM, { type: 'stop', id: out.id });
+		for (const viewer of out.viewers.values()) closeCall(viewer);
+		out.viewers.clear();
 		stopTracks(out.stream);
 		this.unlock(out);
-		if (!keepResume) writeResume(null);
-		this.preview.srcObject = null;
+		out.preview.srcObject = null;
+		out.preview.remove();
+		if (!keepResume) writeResume([...this.outs.keys()]);
+		if (!this.outs.size) {
+			clearInterval(this.statsTimer);
+			this.statsTimer = null;
+		}
 		this.render();
 	}
 
 	toggleMic() {
-		const tracks = this.out?.stream.getAudioTracks() ?? [];
+		const tracks = this.outs.get('camera')?.stream.getAudioTracks() ?? [];
 		if (!tracks.length) return;
 		if (this.voiceOn) {
 			toast('Your microphone goes through the room’s voice');
@@ -450,8 +414,8 @@ class StreamTool {
 	}
 
 	async switchCamera() {
-		const out = this.out;
-		if (!out || out.kind !== 'camera' || this.busy) return;
+		const out = this.outs.get('camera');
+		if (!out || this.busy) return;
 		const settings = out.stream.getVideoTracks()[0]?.getSettings() ?? {};
 		if (settings.facingMode) {
 			const facing = settings.facingMode === 'environment' ? 'user' : 'environment';
@@ -466,22 +430,41 @@ class StreamTool {
 		await this.replaceVideo(out, { deviceId: next.deviceId }, settings.deviceId);
 	}
 
+	/** The resolution the camera runs at: the chosen one, or 480p on a phone sending to many. */
+	resOf(out) {
+		return out.lowered && this.prefs.res !== '480p' ? '480p' : this.prefs.res;
+	}
+
 	async setResolution(res) {
 		this.savePrefs({ res });
-		const out = this.out;
-		if (!out || out.kind !== 'camera' || this.busy) return;
+		const out = this.outs.get('camera');
+		if (!out || this.busy) return;
+		await this.applyResolution(out);
+		this.render();
+	}
+
+	async applyResolution(out) {
 		const track = out.stream.getVideoTracks()[0];
-		const [width, height] = RESOLUTIONS[res];
+		if (!track) return;
+		const [width, height] = RESOLUTIONS[this.resOf(out)];
 		try {
 			await track.applyConstraints({ width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: 30 } });
 		} catch {
 			const { deviceId } = track.getSettings();
 			await this.replaceVideo(out, { deviceId }, deviceId);
 		}
-		this.render();
 	}
 
-	/** Swap the camera track without a new call, so the receiver's video keeps playing. */
+	/** A phone encodes one copy of its camera per viewer and gets hot: past CROWD viewers it goes down to 480p. */
+	fitCamera(out) {
+		if (out.kind !== 'camera' || !coarse() || this.outs.get('camera') !== out) return;
+		const crowd = out.viewers.size > CROWD;
+		if (crowd === out.lowered) return;
+		out.lowered = crowd;
+		if (this.prefs.res !== '480p' && !this.busy) this.applyResolution(out).catch(() => {});
+	}
+
+	/** Swap the camera track on every call without new calls, so the viewers' video keeps playing. */
 	async replaceVideo(out, target, fallbackDeviceId) {
 		this.busy = true;
 		this.render();
@@ -490,71 +473,156 @@ class StreamTool {
 		try {
 			let stream;
 			try {
-				stream = await getVideo({ ...target, res: this.prefs.res });
+				stream = await getVideo({ ...target, res: this.resOf(out) });
 			} catch (err) {
 				toast(mediaError(err, 'camera'));
 				if (!fallbackDeviceId) throw err;
-				stream = await getVideo({ deviceId: fallbackDeviceId, res: this.prefs.res });
+				stream = await getVideo({ deviceId: fallbackDeviceId, res: this.resOf(out) });
 			}
-			if (this.out !== out) return stopTracks(stream);
+			if (this.outs.get(out.kind) !== out) return stopTracks(stream);
 			const [track] = stream.getVideoTracks();
 			track.contentHint = 'motion';
 			if (old) out.stream.removeTrack(old);
 			out.stream.addTrack(track);
 			this.watchTrack(out, track);
-			const sender = out.call?.peerConnection?.getSenders().find(s => s.track === old || s.track?.kind === 'video');
-			await sender?.replaceTrack(track);
-			this.preview.srcObject = null; // re-attach so the preview picks up the new track
-			this.preview.srcObject = out.stream;
+			await Promise.all([...out.viewers.values()].map(viewer => videoSender(viewer.call)?.replaceTrack(track).catch(() => {})));
+			out.preview.srcObject = null; // re-attach so the preview picks up the new track
+			out.preview.srcObject = out.stream;
 		} catch (err) {
 			console.warn('[peerkit] camera switch failed', err);
-			if (this.out === out) this.stopOutgoing();
+			if (this.outs.get(out.kind) === out) this.stopOutgoing(out.kind);
 		} finally {
 			this.busy = false;
 			this.render();
 		}
 	}
 
+	// --- upload: rate, and each viewer's cap ---
+
+	/**
+	 * Every viewer is a call with a congestion control of its own, all of them on this device's one upload. When
+	 * a call says its picture is held back by bandwidth, its cap goes below what it gets through now, so the
+	 * encoder makes a softer picture on purpose instead of the network dropping frames; after a calm while it
+	 * goes up again, and past the top it is taken off.
+	 */
+	async sample() {
+		for (const out of [...this.outs.values()]) {
+			let rate = 0;
+			let limited = false;
+			for (const viewer of [...out.viewers.values()]) {
+				const pc = viewer.call?.peerConnection;
+				if (typeof pc?.getStats !== 'function') continue;
+				let report;
+				try {
+					report = await pc.getStats();
+				} catch {
+					continue;
+				}
+				let bytes = 0;
+				let squeezed = false;
+				report.forEach(stat => {
+					if (stat.type !== 'outbound-rtp') return;
+					bytes += stat.bytesSent ?? 0;
+					if (stat.kind === 'video' && stat.qualityLimitationReason === 'bandwidth') squeezed = true;
+				});
+				const now = Date.now();
+				if (viewer.time && now > viewer.time) viewer.rate = Math.max(0, ((bytes - viewer.bytes) * 8000) / (now - viewer.time));
+				viewer.bytes = bytes;
+				viewer.time = now;
+				rate += viewer.rate;
+				limited ||= squeezed;
+				await this.adapt(out, viewer, squeezed);
+			}
+			out.rate = rate;
+			out.limited = limited;
+		}
+		this.renderStats();
+	}
+
+	async adapt(out, viewer, squeezed) {
+		let cap = viewer.cap;
+		if (squeezed) {
+			viewer.calm = 0;
+			const below = Math.max(MIN_BITRATE, Math.round(viewer.rate * 0.85));
+			if (!viewer.rate || (cap && below >= cap)) return;
+			cap = below;
+		} else {
+			if (!cap || ++viewer.calm < RAISE_AFTER) return;
+			viewer.calm = 0;
+			cap = Math.round(cap * 1.25);
+			if (cap > TOP_BITRATE[out.kind]) cap = null;
+		}
+		const sender = videoSender(viewer.call);
+		if (typeof sender?.getParameters !== 'function') return;
+		try {
+			const params = sender.getParameters();
+			if (!params.encodings?.length) params.encodings = [{}];
+			if (cap) params.encodings[0].maxBitrate = cap;
+			else delete params.encodings[0].maxBitrate;
+			await sender.setParameters(params);
+			viewer.cap = cap;
+		} catch (err) {
+			console.warn('[peerkit] could not cap a stream', err);
+		}
+	}
+
 	// --- incoming ---
 
 	onMessage(msg, member) {
-		const id = typeof msg.id === 'string' ? msg.id.slice(0, 32) : null;
+		const id = readId(msg.id);
 		if (!id) return;
 		switch (msg.type) {
 			case 'start':
 				this.expectIncoming(id, msg.kind === 'screen' ? 'screen' : 'camera', member);
 				break;
-			case 'stop':
-				if (this.in?.id === id && this.in.from === member.peerId) this.endIncoming();
+			case 'stop': {
+				const inc = this.ins.get(id);
+				if (inc?.from === member.peerId) this.endIncoming(inc);
 				break;
-			case 'close':
-				if (this.out?.id === id && this.out.to === member.peerId) {
-					this.stopOutgoing({ notify: false });
-					toast(`${member.name} closed your stream`);
-				}
+			}
+			case 'watch': {
+				const out = [...this.outs.values()].find(o => o.id === id);
+				if (!out || out.viewers.has(member.peerId)) break;
+				this.callViewer(out, member);
+				this.render();
 				break;
+			}
 		}
 	}
 
-	/** Announced on the control channel; the call itself takes a trip through the server. */
+	/** Announced on the control channel, just before the call. */
 	expectIncoming(id, kind, member) {
-		if (this.in?.id === id) {
-			this.in.from = member.peerId; // the same stream resuming after a reconnect
-			return;
+		const known = this.ins.get(id);
+		if (known) {
+			if (known.from !== member.peerId && known.fromDevice !== member.deviceId) return null; // another member's id
+			known.from = member.peerId; // the same stream after a reconnect, or a reload of this page's sender
+			known.fromName = member.name;
+			return known;
 		}
-		this.dropIncoming();
-		this.in = { id, kind, from: member.peerId, fromName: member.name, call: null, stream: null, state: 'connecting', seen: false, unfollow: null, timer: null, locked: false };
-		this.lock(this.in);
-		this.ctx.activate();
+		if (this.ins.size >= MAX_INCOMING) return null;
+		const inc = {
+			id, kind, from: member.peerId, fromDevice: member.deviceId, fromName: member.name,
+			call: null, stream: null, state: 'connecting', seen: false, muted: false, unfollow: null, timer: null, locked: false, panel: null,
+		};
+		this.makeTile(inc);
+		this.ins.set(id, inc);
+		this.lock(inc);
+		this.place();
+		if (!this.docked) this.ctx?.activate?.(); // a panel of its own comes to the front by itself
+		this.ctx?.notify?.();
 		this.render();
+		return inc;
 	}
 
 	onCall(call, member) {
 		const meta = call.metadata ?? {};
 		if (meta.kind !== 'camera' && meta.kind !== 'screen') return; // a 'voice' call belongs to app/voice.js
-		const id = typeof meta.id === 'string' ? meta.id.slice(0, 32) : randomId(4);
-		this.expectIncoming(id, meta.kind === 'screen' ? 'screen' : 'camera', member);
-		const inc = this.in;
+		const id = readId(meta.id);
+		const inc = id && this.expectIncoming(id, meta.kind, member);
+		if (!inc || inc.state === 'closed') {
+			call.close(); // closed here, and called again after a drop: the sender hears it from the call
+			return;
+		}
 		closeCall(inc);
 		clearTimeout(inc.timer);
 		this.lock(inc); // released if it had ended before the sender came back
@@ -562,20 +630,23 @@ class StreamTool {
 		inc.state = 'connecting';
 		inc.seen = false;
 		call.on('stream', stream => {
-			if (this.in !== inc || inc.call !== call) return;
+			if (this.ins.get(id) !== inc || inc.call !== call) return;
 			// Fires once per track, with the same stream.
-			if (this.remote.srcObject !== stream) this.remote.srcObject = stream;
+			if (inc.video.srcObject !== stream) inc.video.srcObject = stream;
 			inc.stream = stream;
 			inc.state = 'playing';
 			this.follow(inc, stream);
 			this.render();
-			this.play();
+			this.play(inc);
 		});
 		call.on('close', () => {
-			if (this.in !== inc || inc.call !== call || inc.state === 'ended') return;
+			if (this.ins.get(id) !== inc || inc.call !== call || inc.state === 'ended' || inc.state === 'closed') return;
 			inc.call = null;
-			if (this.room.member(inc.from)) this.endIncoming();
-			else this.pauseIncoming();
+			if (!this.room.member(inc.from)) return this.pauseIncoming(inc);
+			// The sender is still here, but the call gave up (no network route): a try again is one tap.
+			inc.state = 'lost';
+			inc.unfollow?.();
+			this.render();
 		});
 		call.on('error', err => console.warn('[peerkit] media call error', err));
 		call.answer(undefined, callOptions(inc.kind)); // receive only
@@ -584,7 +655,7 @@ class StreamTool {
 
 	/**
 	 * The call hands over its tracks as soon as it is negotiated, before a single frame has come through: a
-	 * video track is `muted` until then. Until it unmutes the stage keeps saying it is connecting, instead of
+	 * video track is `muted` until then. Until it unmutes the tile keeps saying it is connecting, instead of
 	 * showing a black picture as if the stream were there. Once seen, a later mute (a still screen sends
 	 * nothing) keeps the picture.
 	 */
@@ -598,7 +669,7 @@ class StreamTool {
 		}
 		const onUnmute = () => {
 			inc.unfollow?.();
-			if (this.in !== inc) return;
+			if (this.ins.get(inc.id) !== inc) return;
 			inc.seen = true;
 			this.render();
 		};
@@ -609,88 +680,181 @@ class StreamTool {
 		};
 	}
 
-	pauseIncoming() {
-		const inc = this.in;
+	pauseIncoming(inc) {
+		clearTimeout(inc.timer);
+		if (inc.state === 'ended') return;
+		if (inc.state === 'closed') {
+			// Nothing to wait for; forget it unless the sender is back in time and says it is still on.
+			inc.timer = setTimeout(() => this.removeIncoming(inc), GRACE + 5000);
+			return;
+		}
 		inc.state = 'paused';
 		closeCall(inc);
-		clearTimeout(inc.timer);
 		inc.timer = setTimeout(() => {
-			if (this.in === inc && inc.state === 'paused') this.endIncoming();
+			if (this.ins.get(inc.id) === inc && inc.state === 'paused') this.endIncoming(inc);
 		}, GRACE + 5000);
 		this.render();
 	}
 
-	endIncoming() {
-		const inc = this.in;
-		if (!inc) return;
+	/** The sender stopped it, or never came back: the tile says so until it is closed. */
+	endIncoming(inc) {
+		if (inc.state === 'closed') return this.removeIncoming(inc);
 		inc.state = 'ended';
+		this.release(inc);
+		this.render();
+	}
+
+	/**
+	 * The viewer closes a stream: closing the call tells the sender, which stops sending here; the others keep it.
+	 * It stays as a chip to watch again.
+	 */
+	closeIncoming(inc) {
+		if (inc.state === 'ended') return this.removeIncoming(inc);
+		inc.state = 'closed';
+		this.release(inc);
+		this.place();
+		this.render();
+	}
+
+	/** Watch a closed stream again, or try again after the call gave up. */
+	watchIncoming(inc) {
+		if (!this.room.member(inc.from)) return;
+		this.room.send(CH.STREAM, { type: 'watch', id: inc.id }, inc.from);
+		inc.state = 'connecting';
+		inc.seen = false;
+		this.lock(inc);
+		this.place();
+		this.render();
+	}
+
+	/** Ends what plays, keeps the tile. */
+	release(inc) {
 		inc.unfollow?.();
 		clearTimeout(inc.timer);
+		inc.timer = null;
 		closeCall(inc);
 		this.unlock(inc);
-		this.leaveFullscreen();
-		this.remote.srcObject = null;
+		this.leaveFullscreen(inc);
+		inc.video.srcObject = null;
+		inc.stream = null;
+		if (this.focused === inc.id) this.focused = null;
+	}
+
+	removeIncoming(inc) {
+		if (this.ins.get(inc.id) !== inc) return;
+		this.release(inc);
+		this.ins.delete(inc.id);
+		inc.panel?.close();
+		inc.panel = null;
+		inc.tile.remove();
 		this.render();
 	}
 
-	dropIncoming() {
-		if (!this.in) return;
-		this.endIncoming();
-		this.in = null;
+	// --- where a stream is shown ---
+
+	makeTile(inc) {
+		inc.video = h('video', { class: 'remote', playsinline: true, autoplay: true, muted: true });
+		inc.video.muted = true;
+		inc.message = h('div', { class: 'stage-message' });
+		inc.soundBtn = button('Tap for sound', 'volume-x', () => this.setSound(true), 'btn primary sound-btn');
+		inc.actions = h('div', { class: 'stage-actions' });
+		inc.label = h('div', { class: 'tile-label' });
+		inc.tile = h('div', { class: 'tile', 'data-stream': inc.id }, inc.video, inc.message, inc.soundBtn, inc.actions, inc.label);
+		// A tap on the picture shows it large in the grid, and a second tap goes back.
+		inc.video.addEventListener('click', () => this.toggleFocus(inc));
+		for (const type of ['enterpictureinpicture', 'leavepictureinpicture']) inc.video.addEventListener(type, () => this.render());
+	}
+
+	titleOf(inc) {
+		return `${inc.fromName}’s ${KIND_NOUN[inc.kind]}`;
+	}
+
+	/**
+	 * Each stream is a panel of its own on a wide screen, and a tile in the Stream tab's grid otherwise. A closed
+	 * one is neither: it waits as a chip.
+	 */
+	place() {
+		const docked = this.docked;
+		for (const inc of this.ins.values()) {
+			if (inc.state === 'closed') {
+				inc.panel?.close();
+				inc.panel = null;
+				inc.tile.remove();
+				continue;
+			}
+			if (docked && !inc.panel?.open) {
+				inc.panel = this.ctx.openPanel?.({ id: inc.id, title: this.titleOf(inc), el: inc.tile, onClose: () => this.closeIncoming(inc) }) ?? null;
+			} else if (!docked && inc.panel) {
+				inc.panel.close();
+				inc.panel = null;
+			}
+			inc.tile.classList.toggle('in-panel', Boolean(inc.panel?.open));
+			if (!inc.panel?.open && inc.tile.parentNode !== this.grid) this.grid.append(inc.tile);
+			// Moving a video element pauses it.
+			if (inc.state === 'playing' && inc.video.paused) inc.video.play().catch(() => {});
+		}
+	}
+
+	toggleFocus(inc) {
+		if (inc.panel?.open) return;
+		this.focused = this.focused === inc.id ? null : inc.id;
 		this.render();
 	}
 
-	/** The viewer closes the stream: the sender stops too. */
-	closeIncoming() {
-		if (this.in && this.in.state !== 'ended') this.room.send(CH.STREAM, { type: 'close', id: this.in.id }, this.in.from);
-		this.dropIncoming();
-	}
-
-	async play() {
-		const video = this.remote;
-		video.muted = !this.soundOn;
+	async play(inc) {
+		const video = inc.video;
+		video.muted = !this.soundOn || inc.muted;
 		try {
 			await video.play();
 		} catch {
 			// Sound needs a recent tap on the page; fall back to muted with "Tap for sound".
 			if (!video.muted) {
-				video.muted = true;
 				this.soundOn = false;
+				video.muted = true;
 				await video.play().catch(() => {});
 			}
 		}
 		this.render();
 	}
 
+	/** "Tap for sound" turns sound on for every stream: the tap is what the browser waits for. */
 	setSound(on) {
 		this.soundOn = on;
-		this.remote.muted = !on;
-		if (on) this.remote.play().catch(() => {});
+		for (const inc of this.ins.values()) {
+			inc.video.muted = !on || inc.muted;
+			if (on && inc.state === 'playing') inc.video.play().catch(() => {});
+		}
 		this.render();
 	}
 
-	async toggleFullscreen() {
+	toggleMute(inc) {
+		inc.muted = !inc.muted;
+		inc.video.muted = !this.soundOn || inc.muted;
+		this.render();
+	}
+
+	async toggleFullscreen(inc) {
 		if (document.fullscreenElement) {
 			document.exitFullscreen().catch(() => {});
 			return;
 		}
 		try {
-			await this.stage.requestFullscreen({ navigationUI: 'hide' });
-			const { videoWidth, videoHeight } = this.remote;
+			await inc.tile.requestFullscreen({ navigationUI: 'hide' });
+			const { videoWidth, videoHeight } = inc.video;
 			if (coarse() && videoWidth > videoHeight) await screen.orientation?.lock?.('landscape')?.catch(() => {});
 		} catch (err) {
 			console.warn('[peerkit] fullscreen failed', err);
 		}
 	}
 
-	togglePip() {
-		if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
-		else this.remote.requestPictureInPicture().catch(() => toast('Picture-in-picture is not available'));
+	togglePip(inc) {
+		if (document.pictureInPictureElement === inc.video) document.exitPictureInPicture().catch(() => {});
+		else inc.video.requestPictureInPicture().catch(() => toast('Picture-in-picture is not available'));
 	}
 
-	leaveFullscreen() {
-		if (document.fullscreenElement === this.stage) document.exitFullscreen().catch(() => {});
-		if (document.pictureInPictureElement === this.remote) document.exitPictureInPicture().catch(() => {});
+	leaveFullscreen(inc) {
+		if (document.fullscreenElement === inc.tile) document.exitFullscreen().catch(() => {});
+		if (document.pictureInPictureElement === inc.video) document.exitPictureInPicture().catch(() => {});
 	}
 
 	lock(item) {
@@ -708,103 +872,175 @@ class StreamTool {
 	// --- rendering ---
 
 	render() {
-		const { out, in: inc, connected } = this;
-		const playing = inc?.state === 'playing' && Boolean(inc.stream) && inc.seen;
-		const hasAudio = playing && inc.stream.getAudioTracks().length > 0;
-		const facing = out?.stream.getVideoTracks()[0]?.getSettings().facingMode;
+		const incs = [...this.ins.values()];
+		const inGrid = incs.filter(inc => inc.state !== 'closed' && !inc.panel?.open);
+		if (this.focused && !inGrid.some(inc => inc.id === this.focused)) this.focused = null;
+		const focus = inGrid.length > 1 ? this.focused : null;
 
-		this.el.classList.toggle('has-remote', Boolean(inc));
-		this.el.classList.toggle('has-preview', Boolean(out));
-		this.remote.hidden = !playing;
-		this.preview.hidden = !out;
-		// Mirror yourself, as in a mirror, except the back camera.
-		this.preview.classList.toggle('mirror', out?.kind === 'camera' && facing !== 'environment');
-		this.preview.classList.toggle('paused', Boolean(out?.paused));
-		this.soundBtn.hidden = !(hasAudio && this.remote.muted);
+		this.el.classList.toggle('has-remote', inGrid.length > 0);
+		this.el.classList.toggle('has-preview', this.outs.size > 0);
+		this.grid.hidden = !inGrid.length;
+		this.grid.classList.toggle('focused', Boolean(focus));
+		this.grid.style.setProperty('--others', String(Math.max(1, inGrid.length - 1)));
+		for (const inc of incs) this.renderTile(inc, focus);
 
-		this.stageActions.hidden = !playing;
-		if (playing) {
-			const fullscreen = Boolean(document.fullscreenElement);
-			this.stageActions.replaceChildren(...[
-				hasAudio && !this.remote.muted && iconButton('volume', 'Mute', () => this.setSound(false)),
-				document.pictureInPictureEnabled && iconButton('pip', 'Picture-in-picture', () => this.togglePip()),
-				this.stage.requestFullscreen && iconButton(fullscreen ? 'minimize' : 'maximize', fullscreen ? 'Exit full screen' : 'Full screen', () => this.toggleFullscreen()),
-				iconButton('close', 'Close stream', () => this.closeIncoming()),
-			].filter(Boolean));
+		this.previews.hidden = !this.outs.size;
+		for (const out of this.outs.values()) {
+			const facing = out.stream.getVideoTracks()[0]?.getSettings().facingMode;
+			// Mirror yourself, as in a mirror, except the back camera.
+			out.preview.classList.toggle('mirror', out.kind === 'camera' && facing !== 'environment');
 		}
 
-		this.renderMessage(inc, out);
-		this.renderResume(connected, out);
-		this.renderBar(connected, out);
+		this.renderMessage(inGrid, incs);
+		this.renderClosed(incs);
+		this.renderResume();
+		this.renderBar();
 	}
 
-	renderMessage(inc, out) {
+	renderTile(inc, focus) {
+		const playing = inc.state === 'playing' && Boolean(inc.stream) && inc.seen;
+		const hasAudio = playing && inc.stream.getAudioTracks().length > 0;
+		inc.tile.classList.toggle('focus', focus === inc.id);
+		inc.tile.dataset.state = inc.state;
+		inc.video.hidden = !playing;
+		inc.label.textContent = this.titleOf(inc);
+		inc.label.hidden = Boolean(inc.panel?.open) && playing; // the panel's tab names it
+		inc.soundBtn.hidden = !(hasAudio && !this.soundOn);
+
+		inc.actions.hidden = inc.state === 'closed';
+		const fullscreen = document.fullscreenElement === inc.tile;
+		inc.actions.replaceChildren(...[
+			hasAudio && this.soundOn && iconButton(inc.muted ? 'volume-x' : 'volume', inc.muted ? 'Unmute' : 'Mute', () => this.toggleMute(inc), { pressed: inc.muted }),
+			playing && document.pictureInPictureEnabled && iconButton('pip', 'Picture-in-picture', () => this.togglePip(inc)),
+			playing && inc.tile.requestFullscreen && iconButton(fullscreen ? 'minimize' : 'maximize', fullscreen ? 'Exit full screen' : 'Full screen', () => this.toggleFullscreen(inc)),
+			inc.state !== 'ended' && iconButton('close', `Close ${this.titleOf(inc)}`, () => this.closeIncoming(inc)),
+		].filter(Boolean));
+
 		let content = null;
-		if (inc?.state === 'connecting' || (inc?.state === 'playing' && !inc.seen)) {
-			content = [h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', {}, `Connecting to ${inc.fromName}’s ${KIND_NOUN[inc.kind]}…`)];
-		} else if (inc?.state === 'paused') {
+		const noun = inc.kind === 'screen' ? 'screen sharing' : 'camera stream';
+		if (inc.state === 'connecting' || (inc.state === 'playing' && !inc.seen)) {
+			content = [h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', {}, `Connecting to ${this.titleOf(inc)}…`)];
+		} else if (inc.state === 'paused') {
 			content = [h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', {}, 'Paused until the connection comes back…')];
-		} else if (inc?.state === 'ended') {
-			content = [h('p', {}, `${inc.fromName}’s ${inc.kind === 'screen' ? 'screen sharing' : 'camera stream'} ended`), button('Close', null, () => this.dropIncoming(), 'btn')];
-		} else if (!inc && !out) {
+		} else if (inc.state === 'lost') {
+			content = [h('p', {}, `The connection to ${this.titleOf(inc)} was lost.`), button('Try again', null, () => this.watchIncoming(inc), 'btn')];
+		} else if (inc.state === 'ended') {
+			content = [h('p', {}, `${inc.fromName}’s ${noun} ended`), button('Close', null, () => this.removeIncoming(inc), 'btn')];
+		}
+		inc.message.hidden = !content;
+		if (content) inc.message.replaceChildren(...content);
+	}
+
+	renderMessage(inGrid, incs) {
+		let content = null;
+		if (inGrid.length || this.outs.size) {
+			// the grid or the previews fill the stage
+		} else if (incs.some(inc => inc.panel?.open)) {
+			content = [icon('camera'), h('p', { class: 'hint' }, 'Each stream opens in a panel of its own.')];
+		} else {
 			content = [
 				icon('camera'),
-				h('p', {}, 'Share your camera or screen with someone in the room.'),
-				h('p', { class: 'hint' }, 'When someone shares with you, the video appears here.'),
+				h('p', {}, 'Share your camera or screen with the room.'),
+				h('p', { class: 'hint' }, 'When someone shares, it appears here.'),
 			];
 		}
 		this.message.hidden = !content;
 		if (content) this.message.replaceChildren(...content);
 	}
 
-	renderResume(connected, out) {
-		const kind = this.resume;
-		const show = Boolean(kind) && !out;
-		this.resumeBar.hidden = !show;
-		if (!show) return;
+	/** Streams this device closed while they go on: one tap to watch again. */
+	renderClosed(incs) {
+		const closed = incs.filter(inc => inc.state === 'closed');
+		this.closedBar.hidden = !closed.length;
+		if (!closed.length) return;
+		this.closedBar.replaceChildren(
+			h('span', { class: 'hint' }, 'Closed:'),
+			...closed.map(inc => button(`Watch ${this.titleOf(inc)}`, 'camera', () => this.watchIncoming(inc), 'btn small ghost')));
+	}
+
+	renderResume() {
+		const kinds = this.resume.filter(kind => !this.outs.has(kind));
+		this.resumeBar.hidden = !kinds.length;
+		if (!kinds.length) return;
+		const noun = kind => (kind === 'screen' ? 'screen sharing' : 'camera');
 		this.resumeBar.replaceChildren(
-			h('span', {}, `Your ${kind === 'screen' ? 'screen sharing' : 'camera'} stopped when the page reloaded.`),
-			button('Resume', null, () => this.chooseMember(kind, member => (kind === 'screen' ? this.startScreen(member) : this.startCamera(member))), 'btn small primary'),
+			h('span', {}, `Your ${kinds.map(noun).join(' and ')} stopped when the page reloaded.`),
+			...kinds.map(kind => button(kinds.length > 1 ? `Resume ${kind}` : 'Resume', null, () => this.start(kind), 'btn small primary')),
 			iconButton('close', 'Dismiss', () => {
-				this.resume = null;
-				writeResume(null);
+				this.resume = [];
+				writeResume([...this.outs.keys()]);
 				this.render();
 			}));
 	}
 
-	renderBar(connected, out) {
-		if (!out) {
-			const disabled = this.busy || !canCapture();
-			this.bar.replaceChildren(...[
-				button('Share camera', 'camera', () => this.chooseMember('camera', member => this.startCamera(member)), 'btn'),
-				canShareScreen() && button('Share screen', 'monitor', () => this.chooseMember('screen', member => this.startScreen(member)), 'btn'),
-				!canCapture() && h('span', { class: 'hint' }, 'Sharing needs HTTPS.'),
-				canCapture() && !connected && h('span', { class: 'hint' }, 'You can start now: whoever joins first sees it.'),
-			].filter(Boolean));
-			for (const control of this.bar.querySelectorAll('button')) control.disabled = disabled;
-			return;
+	/**
+	 * The bar is built again only when what it holds changes; the numbers in it are updated in place every
+	 * STATS_EVERY, since a button replaced between press and release loses its click.
+	 */
+	renderBar() {
+		const camera = this.outs.get('camera');
+		const audio = camera?.stream.getAudioTracks() ?? [];
+		const micOn = Boolean(audio[0]?.enabled);
+		const key = JSON.stringify([
+			[...this.outs.values()].map(out => [out.id, out.lowered]),
+			this.busy, this.cameraCount, audio.length, micOn, this.voiceOn, this.prefs.res, this.room.members.length > 0,
+		]);
+		if (key === this.barKey) return this.renderStats();
+		this.barKey = key;
+
+		const rows = [];
+		for (const out of this.outs.values()) {
+			const items = [
+				out.status = h('span', { class: 'live' }),
+				out.warning = h('span', { class: 'stream-warn', role: 'status' }),
+			];
+			if (out.kind === 'camera') {
+				if (this.cameraCount > 1) items.push(iconButton('switch-camera', 'Switch camera', () => this.switchCamera()));
+				items.push(iconButton(micOn ? 'mic' : 'mic-off',
+					!audio.length ? 'No microphone' : this.voiceOn ? 'Your microphone goes through the room’s voice' : micOn ? 'Mute microphone' : 'Unmute microphone',
+					() => this.toggleMic(),
+					{ disabled: !audio.length || this.voiceOn, pressed: audio.length ? !micOn : null }));
+				items.push(h('select', {
+					class: 'input select',
+					'aria-label': 'Resolution',
+					title: out.lowered && this.prefs.res !== '480p' ? `480p while more than ${CROWD} watch` : null,
+					onchange: e => this.setResolution(e.target.value),
+				}, Object.keys(RESOLUTIONS).map(res => h('option', { value: res, selected: res === this.prefs.res }, res))));
+			}
+			items.push(button('Stop', 'stop', () => this.stopOutgoing(out.kind), 'btn small danger'));
+			rows.push(h('div', { class: 'stream-out', 'data-kind': out.kind }, ...items));
 		}
 
-		const audio = out.stream.getAudioTracks();
-		const micOn = Boolean(audio[0]?.enabled);
-		const what = out.kind === 'screen' ? 'your screen' : 'your camera';
-		const label = !out.to
-			? `${out.toName ? `${out.toName} left` : `Ready to share ${what}`} — waiting for someone to join`
-			: out.paused
-				? `Paused until ${out.toName} is back…`
-				: out.kind === 'screen' ? `Sharing your screen with ${out.toName}` : `Sharing camera with ${out.toName}`;
-		const items = [h('span', { class: 'live', 'data-paused': out.paused, 'data-waiting': !out.to }, label)];
-		if (out.kind === 'camera') {
-			if (this.cameraCount > 1) items.push(iconButton('switch-camera', 'Switch camera', () => this.switchCamera()));
-			items.push(iconButton(micOn ? 'mic' : 'mic-off',
-				!audio.length ? 'No microphone' : this.voiceOn ? 'Your microphone goes through the room’s voice' : micOn ? 'Mute microphone' : 'Unmute microphone',
-				() => this.toggleMic(),
-				{ disabled: !audio.length || this.voiceOn, pressed: audio.length ? !micOn : null }));
-			items.push(h('select', { class: 'input select', 'aria-label': 'Resolution', onchange: e => this.setResolution(e.target.value) },
-				Object.keys(RESOLUTIONS).map(res => h('option', { value: res, selected: res === this.prefs.res }, res))));
+		const starts = [
+			!this.outs.has('camera') && button('Share camera', 'camera', () => this.startCamera(), 'btn'),
+			!this.outs.has('screen') && canShareScreen() && button('Share screen', 'monitor', () => this.startScreen(), 'btn'),
+		].filter(Boolean);
+		const hint = !canCapture() ? 'Sharing needs HTTPS.' : !this.outs.size && !this.room.members.length ? 'You can start now: whoever joins sees it.' : null;
+		if (starts.length || hint) {
+			const row = h('div', { class: 'stream-start' }, ...starts, hint && h('span', { class: 'hint' }, hint));
+			for (const control of row.querySelectorAll('button')) control.disabled = this.busy || !canCapture();
+			rows.push(row);
 		}
-		items.push(button('Stop', 'stop', () => this.stopOutgoing(), 'btn small danger'));
-		this.bar.replaceChildren(...items);
-		if (this.busy) for (const control of this.bar.querySelectorAll('button, select')) control.disabled = true;
+		this.bar.replaceChildren(...rows);
+		if (this.busy) for (const control of this.bar.querySelectorAll('.stream-out button, .stream-out select')) control.disabled = true;
+		this.renderStats();
+	}
+
+	/** Who is watching each stream and how much it sends; a warning when the upload can't keep up. */
+	renderStats() {
+		const anyone = this.room.members.length > 0;
+		for (const out of this.outs.values()) {
+			if (!out.status) continue;
+			const what = out.kind === 'screen' ? 'your screen' : 'your camera';
+			const n = out.viewers.size;
+			const text = !anyone
+				? `Ready to share ${what} — whoever joins sees it`
+				: `Sharing ${what} · ${n ? `${n} watching` : 'nobody watching'}${n && out.rate ? ` · ${formatRate(out.rate)}` : ''}`;
+			if (out.status.textContent !== text) out.status.textContent = text;
+			out.status.toggleAttribute('data-waiting', !anyone || !n);
+			const warning = out.limited ? 'Your upload can’t keep up: the picture is made softer' : '';
+			if (out.warning.textContent !== warning) out.warning.textContent = warning;
+			out.warning.hidden = !warning;
+		}
 	}
 }

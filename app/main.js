@@ -761,6 +761,11 @@ function mountTools() {
 		},
 		/** Called each time the tool comes into view (its tab or panel); returns an unsubscribe function. */
 		onShow: fn => layout.onShow(tool.id, fn),
+		/** Panels (a wide window with a mouse) or bottom tabs, and a call after each switch between them. */
+		docked: () => layout.docked,
+		onLayout: fn => layout.onLayout(fn),
+		/** A panel of the tool's own next to it, while docked (one per stream); null with tabs. See ToolLayout.openPanel. */
+		openPanel: options => layout.openPanel(tool.id, options),
 		/** Give a file to another tool and bring it to the front: the viewer's "Open as shared document", a board sent to the Chat. */
 		handOff: (to, file) => {
 			const fn = handOffs.get(to);

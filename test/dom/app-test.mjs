@@ -217,21 +217,43 @@ if (MODE === 'start') {
 	groupWith('Editor').button('Restore').click();
 	await until('and the mark goes when it can be seen again', () => !tabOf('Chat').classList.contains('notify'));
 
-	// A stream that starts brings its panel to the front.
+	// A stream from a member opens in a panel of its own, next to the Stream panel, in front.
+	const toPhone = [];
+	phone.on(`msg:${CH.STREAM}`, msg => toPhone.push(msg));
 	phone.send(CH.STREAM, { type: 'start', id: 'cam1', kind: 'camera' });
-	await until('a stream from a member brings the Stream panel to the front', () => groupWith('Stream').front === 'Stream');
+	await until('a stream from a member opens a panel of its own, in front, in the Stream panel’s group',
+		() => groupWith('Phone’s camera')?.front === 'Phone’s camera' && groupWith('Phone’s camera').el === groupWith('Stream').el);
+	const camTile = () => $('[data-stream="cam1"]');
+	check('the stream is in that panel, not in the Stream tool', Boolean(camTile()?.closest('.dock-panel')) && !camTile().closest('.stream') && camTile().classList.contains('in-panel'));
 	// Its call, over the link. A video track is muted until the first frame comes through: black until then.
 	const camTrack = new FakeTrack('video');
 	camTrack.muted = true;
 	phone.call(phone.members[0].peerId, new FakeMediaStream([camTrack]), { id: 'cam1', kind: 'camera' });
-	await until('the call is answered, and with no frame yet the stage says it is connecting instead of showing black',
-		() => $('.stream .remote').srcObject && $('.stream .remote').hidden && $('.stream .stage-message:not([hidden])')?.textContent.includes('Connecting to Phone'));
+	await until('the call is answered, and with no frame yet the panel says it is connecting instead of showing black',
+		() => camTile().querySelector('.remote').srcObject && camTile().querySelector('.remote').hidden && camTile().querySelector('.stage-message:not([hidden])')?.textContent.includes('Connecting to Phone’s camera'));
 	camTrack.muted = false;
 	camTrack.fire('unmute');
-	await until('the first frame brings up the picture', () => !$('.stream .remote').hidden && $('.stream .stage-message').hidden);
+	await until('the first frame brings up the picture', () => !camTile().querySelector('.remote').hidden && camTile().querySelector('.stage-message').hidden);
 	camTrack.muted = true;
 	camTrack.fire('mute');
-	check('and a still screen that sends nothing for a while keeps it', !$('.stream .remote').hidden);
+	check('and a still screen that sends nothing for a while keeps it', !camTile().querySelector('.remote').hidden);
+	check('the Stream panel says where the streams are', $('.stream .stage-message:not([hidden])')?.textContent.includes('panel of its own'));
+
+	// A second stream goes to the right of the first, so both can be seen.
+	phone.send(CH.STREAM, { type: 'start', id: 'scr1', kind: 'screen' });
+	const screenCall = phone.call(phone.members[0].peerId, new FakeMediaStream([new FakeTrack('video')]), { id: 'scr1', kind: 'screen' });
+	await until('a second stream gets a panel beside the first', () => groupWith('Phone’s screen') && groupWith('Phone’s screen').el !== groupWith('Phone’s camera').el && groups().length === 3);
+	await until('and plays', () => !$('[data-stream="scr1"] .remote').hidden);
+	// Closing its tab closes that stream for this device only: the sender is told, and it can be watched again.
+	tabOf('Phone’s screen').querySelector('.dock-tab-close').click();
+	await until('closing a stream’s tab closes its panel and its call, on the sender’s side too', () => !groupWith('Phone’s screen') && groups().length === 2 && screenCall.closed);
+	check('it waits as a chip to watch again', Boolean(buttonByText($('.stream-closed'), 'Watch Phone’s screen')) && visible($('.stream-closed')));
+	buttonByText($('.stream-closed'), 'Watch Phone’s screen').click();
+	await until('Watch asks the sender again and brings the panel back', () => toPhone.some(m => m.type === 'watch' && m.id === 'scr1') && Boolean(groupWith('Phone’s screen')) && $('.stream-closed').hidden);
+	phone.send(CH.STREAM, { type: 'stop', id: 'scr1' });
+	await until('a stream the sender stops says so in its panel', () => $('[data-stream="scr1"] .stage-message:not([hidden])')?.textContent.includes('Phone’s screen sharing ended'));
+	buttonByText($('[data-stream="scr1"]'), 'Close').click();
+	await until('and Close takes its panel away', () => !groupWith('Phone’s screen') && !$('[data-stream="scr1"]') && groups().length === 2);
 
 	// Float the chat, then narrow the window: the bottom tabs come back with the same tools, not new ones.
 	groupWith('Chat').button('Float').click();
@@ -241,20 +263,23 @@ if (MODE === 'start') {
 	check('a narrow window gets the bottom tabs back', !$('#tabs').hidden && !$('.dock') && $('#reset-layout').hidden && !$('#tool-host').classList.contains('docked'));
 	check('with the same tool elements, not remounted ones', $('[data-tool="editor"]') === editorEl && ($('.cm-editor') ?? $('.editor')) === cm);
 	check('and one tool shown at a time', [...document.querySelectorAll('.tool')].filter(el => !el.hidden).length === 1);
+	check('the stream moves into the Stream tab’s grid, the same element, still playing', camTile()?.parentNode === $('.stream .stream-grid') && camTile().querySelector('.remote').srcObject && !camTile().querySelector('.remote').hidden && !camTile().classList.contains('in-panel'));
 	buttonByText($('#tabs'), 'Chat').click();
 	check('the tabs work as on a phone', visible($('[data-tool="chat"] .composer')) && !visible($('[data-tool="editor"]')));
 
 	// Wide again: the saved layout comes back, floating chat and all.
 	setWide(true);
-	await until('widening brings the panels back as they were', () => groups().length === 2 && Boolean(groupWith('Chat')?.button('Put back')) && groupWith('Stream').front === 'Stream');
+	await until('widening brings the panels back as they were', () => groups().length === 2 && Boolean(groupWith('Chat')?.button('Put back')) && Boolean(groupWith('Stream')));
 	check('and the tool that was in front in the tabs is in front', groupWith('Chat').front === 'Chat');
+	await until('with the stream in its panel again, playing', () => Boolean(camTile()?.closest('.dock-panel')) && !camTile().querySelector('.remote').hidden
+		&& [...document.querySelectorAll('.dock-tab')].filter(tab => tab.textContent === 'Phone’s camera').length === 1);
 
 	// Reset layout: the default again.
 	$('#reset-layout').click();
-	await until('Reset layout brings back the default', () => layout() === 'Chat | Stream+Editor+Whiteboard' && Boolean(groupWith('Chat').button('Float')) && groupWith('Editor').front === 'Editor');
+	await until('Reset layout brings back the default, with the stream in its panel', () => layout() === 'Chat | Stream+Editor+Whiteboard+Phone’s camera' && Boolean(groupWith('Chat').button('Float')) && Boolean(camTile()?.closest('.dock-panel')));
 	await until('and saves it', () => {
 		const saved = JSON.parse(localStorage.getItem('peerkit.layout'))?.layout;
-		return saved && !saved.floatingGroups?.length && Object.keys(saved.panels).length === 4;
+		return saved && !saved.floatingGroups?.length && Object.keys(saved.panels).filter(id => !id.includes(':')).length === 4;
 	}, 2000);
 
 	// A layout saved before the Whiteboard existed: kept as it was, with the new tool added next to the Editor.
@@ -273,14 +298,18 @@ if (MODE === 'start') {
 	setWide(true);
 	await until('a layout saved before the Whiteboard keeps its arrangement', () => groups().length === 2 && Boolean(groupWith('Chat')?.button('Put back')));
 	check('and gets the Whiteboard as a tab next to the Editor, behind the tool in front', groupWith('Whiteboard')?.el === groupWith('Editor').el && groupWith('Editor').front !== 'Whiteboard', layout());
-	await until('and saves it with the Whiteboard in it', () => Object.keys(JSON.parse(localStorage.getItem('peerkit.layout'))?.layout?.panels ?? {}).length === 4, 2000);
+	await until('and saves it with the Whiteboard in it', () => Object.keys(JSON.parse(localStorage.getItem('peerkit.layout'))?.layout?.panels ?? {}).filter(id => !id.includes(':')).length === 4, 2000);
+	check('a stream panel in a saved layout is not restored as an empty one: the stream opens its own', [...document.querySelectorAll('.dock-tab')].filter(tab => tab.textContent === 'Phone’s camera').length === 1 && Boolean(camTile()?.closest('.dock-panel')));
 
 	// A saved layout that doesn't fit (another app version, or edited by hand) is ignored.
 	setWide(false);
 	localStorage.setItem('peerkit.layout', JSON.stringify({ version: 1, layout: { panels: { transfer: {}, whiteboard: {} } } }));
 	setWide(true);
-	await until('a saved layout for other tools falls back to the default', () => layout() === 'Chat | Stream+Editor+Whiteboard' && Boolean(groupWith('Chat')?.button('Float')));
+	await until('a saved layout for other tools falls back to the default', () => layout() === 'Chat | Stream+Editor+Whiteboard+Phone’s camera' && Boolean(groupWith('Chat')?.button('Float')));
 	phone.send(CH.STREAM, { type: 'stop', id: 'cam1' });
+	await until('(the camera ends)', () => camTile()?.textContent.includes('ended'));
+	buttonByText(camTile(), 'Close').click();
+	await until('closing the last stream leaves the default layout', () => layout() === 'Chat | Stream+Editor+Whiteboard');
 	await phone.leave();
 } else {
 	// A headless member ("Phone") already in the room.
@@ -390,7 +419,7 @@ if (MODE === 'start') {
 	check('the bar offers Join voice again, and hides Mute’s neighbours', buttonByText(voiceBar(), 'Join voice') === muteButton
 		&& buttonByText(voiceBar(), 'Leave voice').hidden && $('[aria-label="Voice settings"]').hidden && voiceBar().textContent.includes('1 in voice'));
 
-	// Stream: one member, so no picker; buttons enabled.
+	// Stream: it goes to the whole room, so there is no picker; buttons enabled.
 	buttonByText($('#tabs'), 'Stream').click();
 	check('Stream offers sharing to the room', visible(buttonByText($('.stream'), 'Share camera')) && !buttonByText($('.stream'), 'Share camera').disabled);
 
@@ -430,28 +459,34 @@ if (MODE === 'start') {
 	buttonByText($('#tabs'), 'Stream').click();
 	check('the share buttons work in an empty room', !buttonByText($('.stream'), 'Share camera').disabled);
 	buttonByText($('.stream'), 'Share camera').click();
-	await until('the camera starts with no viewer', () => $('.stream .live')?.textContent.includes('waiting for someone to join'));
+	await until('the camera starts with no viewer', () => $('.stream .live')?.textContent === 'Ready to share your camera — whoever joins sees it');
 	check('and no picker was shown', !lastDialog());
 
 	const tablet = new Room({ code, ice: { forRoom: null, adopt: () => false }, identity: { id: 'cccccccccccccccc', name: 'Tablet' } });
 	const tabletCalls = [];
-	tablet.on('call', call => tabletCalls.push(call));
+	tablet.on('call', call => {
+		tabletCalls.push(call);
+		call.answer();
+	});
 	tablet.start();
 	await until('a newcomer gets the stream that was waiting', () => tabletCalls.some(call => call.metadata?.kind === 'camera'), 8000);
-	await until('and the bar names the viewer', () => $('.stream .live')?.textContent === 'Sharing camera with Tablet');
+	await until('and the bar counts the viewer', () => $('.stream .live')?.textContent === 'Sharing your camera · 1 watching');
 
-	// The viewer goes and is not back within the grace: the capture keeps running for whoever comes next.
+	// The viewer goes and is not back for a while: the capture keeps running for whoever comes next.
 	await tablet.leave();
-	await until('the viewer leaving pauses the stream for it', () => $('.stream .live')?.textContent === 'Paused until Tablet is back…');
-	await until('after the grace it waits for anyone instead of stopping', () => $('.stream .live')?.textContent === 'Tablet left — waiting for someone to join', 3000);
-	check('with the capture still on and no "stopped" offer', !$('.stream .preview').hidden && $('.stream-resume').hidden && !buttonByText($('.stream'), 'Share camera'));
+	await until('the viewer leaving takes it off the count', () => $('.stream .live')?.textContent === 'Ready to share your camera — whoever joins sees it');
+	await sleep(400); // longer than the viewer's wait for a sender, at 100× here
+	check('with the capture still on and no "stopped" offer', visible($('.stream .preview')) && $('.stream-resume').hidden && !buttonByText($('.stream'), 'Share camera'));
 	const back = new Room({ code, ice: { forRoom: null, adopt: () => false }, identity: { id: 'cccccccccccccccc', name: 'Tablet' } });
 	const backCalls = [];
-	back.on('call', call => backCalls.push(call));
+	back.on('call', call => {
+		backCalls.push(call);
+		call.answer();
+	});
 	back.start();
 	await until('the viewer coming back later gets the stream again', () => backCalls.some(call => call.metadata?.kind === 'camera'), 8000);
 	check('the same stream, not a new one', backCalls.find(call => call.metadata?.kind === 'camera').metadata.id === tabletCalls.find(call => call.metadata?.kind === 'camera').metadata.id);
-	await until('and the bar names the viewer again', () => $('.stream .live')?.textContent === 'Sharing camera with Tablet');
+	await until('and the bar counts it again', () => $('.stream .live')?.textContent === 'Sharing your camera · 1 watching');
 	buttonByText($('.stream'), 'Stop').click();
 	await back.leave();
 	await until('stopping leaves the share buttons ready again', () => Boolean(buttonByText($('.stream'), 'Share camera')));

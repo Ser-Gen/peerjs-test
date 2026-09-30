@@ -663,7 +663,47 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - A 1080p screen share takes about 1.5–3 Mbit/s per viewer, so 5 viewers need up to about 15 Mbit/s of upload. Viewers behind the TURN relay also use the VPS's bandwidth.
 - A phone encoding several copies of its camera gets hot: lower the default resolution when it has more than 2 viewers.
 
+**As built** (2026-09-30, app 0.13.6, `PROTOCOL_VERSION` 8 — after Slice 13, so the version goes on from 0.13)
+- **Sharing goes to the whole room.** Share camera and Share screen start at once, with no picker; a member can run both. Each stream is announced to every member (`start {id, kind}`) and sent over one media call per viewer. A member whose link comes up (a newcomer, or one back after a drop) gets every stream running. With nobody in the room the capture waits, and whoever arrives gets it.
+- **The sender's bar** has a row per stream: "Sharing your screen · 3 watching · 2.4 Mbit/s" (or "nobody watching", or "Ready to share … whoever joins sees it" when alone), and Stop; the camera row keeps Switch camera, Mic and Resolution. Switch camera replaces the track on every call (`replaceTrack`), and Resolution is `applyConstraints` on the one track they share.
+- **Upload.** Every 2 s the sender reads `getStats()` from each call: the bytes sent give the rate, and `qualityLimitationReason: 'bandwidth'` on a call's video means that call is held back. That call's `maxBitrate` is then set to 85 % of what it gets through (never below 150 kbit/s), and the bar warns "Your upload can’t keep up: the picture is made softer". After 10 s without the limit the cap goes up by a quarter, and it is taken off above 2.5 Mbit/s for a camera or 4 Mbit/s for a screen. Each call has a congestion control of its own on the same upload, so the calls that need it are held back while the others keep going.
+- **A phone's camera** (a touch screen) goes down to 480p while more than 2 watch, since each call is an encoder of its own, and back when they are fewer. The resolution menu keeps the choice and says why in its title.
+- **Viewing.** On a phone or a narrow window the Stream tab shows the streams as a grid of tiles, each with its name, "Connecting…" until its first frame, and Mute, Picture-in-picture, Full screen and Close. A tap on a picture shows it large with the others in a strip under it, and a second tap goes back. Your own previews fill the stage when nobody else is streaming and sit small in a corner when someone is. "Tap for sound" turns sound on for every stream, and Mute silences one.
+  - On a wide screen each stream is a **panel of its own** ("Phone’s camera"), opened in front next to the Stream panel, and a second one to its right, so two can be seen side by side. The Stream panel keeps the bar and the previews. Narrowing the window moves the same tiles into the grid, still playing, and widening puts them back in panels. A stream panel isn't restored from a saved layout: the stream opens its own again.
+- **Closing a stream** (its Close button, or its panel's tab) closes that viewer's call, and the media call tells the sender, whose count drops; the others keep it. It stays as a chip, "Watch Phone’s camera", that asks the sender to call again (`watch {id}`). A call that gives up while both are still linked shows "The connection … was lost" with Try again, which does the same.
+- **A dropped link** pauses the stream on the viewer for 30 s, and the sender calls again with the same id once the link is back. A viewer that had closed it closes that new call too. A sender who doesn't come back: its streams say they ended, with Close.
+- Streams from one member can't be stopped or taken over by another. Ids are checked, and at most 16 streams are kept at once.
+- `PROTOCOL_VERSION` 8: a version-7 sender stops its whole stream when its one viewer closes it, and a version-7 viewer shows one stream at a time.
+- Differences from the plan:
+  - The viewer doesn't send a message to stop getting a stream: closing the call is enough, since media calls tell the other end (0.13.5).
+  - "The 30 s pause and re-call after a dropped link works per viewer": the sender has no pause of its own any more. A dropped viewer is just not called until its link is back, and the viewer does the waiting.
+  - `ctx.openPanel()` from Slice 10 is built: `openPanel({id, title, el, onClose})` while docked, plus `ctx.docked()` and `ctx.onLayout(fn)`. On phones the tool shows its own grid instead of "switchable views".
+- Tests:
+  - `node test/run.mjs stream` (77 checks) runs the tool on real rooms, with four devices and a headless one. It covers:
+    - a screen to everyone;
+    - a camera at the same time;
+    - sound and Mute;
+    - tap to focus;
+    - voice taking the camera's microphone;
+    - a newcomer getting both streams;
+    - 480p for a crowd on a phone;
+    - closing and watching again;
+    - a camera switch on every call;
+    - the upload warning, and a cap that goes down and then back up;
+    - a link that drops and comes back, with a stream closed before the drop staying closed;
+    - forged messages and calls, and the limit of 16 streams;
+    - the sender leaving, Stop, the resume offer after a reload, and wake locks let go.
+  - The desktop app test has stream panels:
+    - in front, and a second one beside the first;
+    - closing one from its tab, and Watch;
+    - an ended stream;
+    - narrowing and widening, Reset layout, and a saved layout with a stream panel in it.
+  - The fake RTCPeerConnection now has `getStats` and sender parameters.
+- Checked in Node, not in a browser. How it looks and the real upload behaviour are for the checklist below.
+
 **Checklist**
+- [ ] On the laptop, each stream is a panel of its own; narrowing the window moves them into the grid and they keep playing.
+- [ ] On the phone, several streams show as a grid; a tap on one shows it large.
 - [ ] The laptop shares its screen; three other devices see it.
 - [ ] The phone shares its camera while the laptop shares its screen: everyone sees both.
 - [ ] A device joins while a stream is running: it sees the stream within a few seconds.

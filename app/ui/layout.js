@@ -33,7 +33,8 @@ function savedLayout(ids) {
 	const layout = saved?.version === LAYOUT_VERSION ? saved.layout : null;
 	if (!layout || typeof layout !== 'object' || !layout.panels || typeof layout.panels !== 'object') return null;
 	if (Array.isArray(layout.popoutGroups) && layout.popoutGroups.length) return null; // never made here
-	const panels = Object.keys(layout.panels);
+	// A tool's own panels (a stream, "stream:<id>") are left out: what they showed is gone after a reload.
+	const panels = Object.keys(layout.panels).filter(id => !id.includes(':'));
 	if (!panels.length || panels.some(id => !ids.includes(id))) return null;
 	return { layout, missing: ids.filter(id => !panels.includes(id)) };
 }
@@ -85,6 +86,8 @@ export class ToolLayout {
 		this.pending = null;
 		this.dirty = false;
 		this.saveTimer = null;
+		this.extras = new Map(); // "<tool>:<id>" → a tool's own panel while docked (openPanel)
+		this.layoutListeners = new Set();
 
 		host.append(...[...this.items.values()].map(item => item.el));
 		if (this.items.size > 1) tabs.replaceChildren(...[...this.items.values()].map(item => item.tab));
@@ -140,6 +143,64 @@ export class ToolLayout {
 		const shows = this.items.get(id)?.shows;
 		shows?.add(fn);
 		return () => shows?.delete(fn);
+	}
+
+	/** Called after switching between tabs and panels, and after Reset layout; returns an unsubscribe function. */
+	onLayout(fn) {
+		this.layoutListeners.add(fn);
+		return () => this.layoutListeners.delete(fn);
+	}
+
+	changed() {
+		this.onChange();
+		for (const fn of [...this.layoutListeners]) fn();
+	}
+
+	/**
+	 * A panel of a tool's own, next to the tool's panel (a stream): only while docked, null otherwise. Switching to
+	 * tabs or Reset layout closes it without `onClose` and tells the tool through onLayout, which puts its
+	 * element back where it belongs; its tab has a close button that calls `onClose`.
+	 * @returns {{open: boolean, close(): void, activate(): void, setTitle(title: string): void} | null}
+	 */
+	openPanel(owner, { id, title, el, onClose = () => {} }) {
+		if (!this.dock || !this.ready || !this.items.has(owner)) return null;
+		const key = `${owner}:${id}`;
+		const known = this.extras.get(key);
+		if (known) return known.handle;
+		const extra = { key, owner, title, el, onClose, tabs: new Set(), open: true, handle: null };
+		// The first one joins the tool's group, the next ones go to the right of the last, so two streams show side by side.
+		const last = [...this.extras.values()].filter(other => other.owner === owner).at(-1);
+		const reference = last ? { referencePanel: last.key, direction: 'right' } : this.dock.getPanel(owner) ? { referencePanel: owner, direction: 'within' } : null;
+		this.extras.set(key, extra);
+		extra.handle = {
+			get open() {
+				return extra.open;
+			},
+			close: () => this.closeExtra(extra),
+			activate: () => extra.open && this.dock?.getPanel(key)?.api.setActive(),
+			setTitle: text => {
+				extra.title = text;
+				for (const tab of extra.tabs) {
+					tab.querySelector('.dv-default-tab-content').textContent = text;
+					const close = tab.querySelector('.dock-tab-close');
+					close.title = `Close ${text}`;
+					close.setAttribute('aria-label', `Close ${text}`);
+				}
+				this.dock?.getPanel(key)?.api.setTitle(text);
+			},
+		};
+		if (this.dock.hasMaximizedGroup()) this.dock.exitMaximizedGroup();
+		this.dock.addPanel({ id: key, component: 'tool', title, ...(reference && { position: reference }) });
+		return extra.handle;
+	}
+
+	closeExtra(extra) {
+		if (!extra.open) return;
+		extra.open = false;
+		this.extras.delete(extra.key);
+		const panel = this.dock?.getPanel(extra.key);
+		if (panel) this.dock.removePanel(panel);
+		extra.el.remove();
 	}
 
 	// --- tabs ---
@@ -201,7 +262,7 @@ export class ToolLayout {
 		this.moving(() => this.build(lib));
 		// The tool that was in front in the tabs stays in front.
 		this.dock.getPanel(this.selected)?.api.setActive();
-		this.onChange();
+		this.changed();
 	}
 
 	toTabs() {
@@ -211,7 +272,7 @@ export class ToolLayout {
 		const active = this.dock.activePanel?.id;
 		this.moving(() => this.teardown());
 		this.select(this.items.has(active) ? active : this.selected);
-		this.onChange();
+		this.changed();
 	}
 
 	/** Back to the default: the main area and the side column. */
@@ -223,6 +284,7 @@ export class ToolLayout {
 			this.build(lib, { fresh: true });
 		});
 		this.save();
+		this.changed();
 	}
 
 	/**
@@ -230,7 +292,7 @@ export class ToolLayout {
 	 * is started again afterwards.
 	 */
 	moving(fn) {
-		const media = [...this.items.values()].flatMap(item => [...item.el.querySelectorAll('video, audio')]);
+		const media = [...this.host.querySelectorAll('video, audio')];
 		const playing = media.filter(el => !el.paused);
 		fn();
 		for (const el of playing) if (el.paused) el.play().catch(() => {});
@@ -267,8 +329,14 @@ export class ToolLayout {
 	}
 
 	teardown() {
-		// Out of the dock first: disposing it removes its panels' elements.
+		// Out of the dock first: disposing it removes its panels' elements. A tool's own panels just close; the
+		// tool puts their elements back when it hears of the change.
 		for (const item of this.items.values()) this.host.append(item.el);
+		for (const extra of this.extras.values()) {
+			extra.open = false;
+			extra.el.remove();
+		}
+		this.extras.clear();
 		for (const sub of this.subs) sub.dispose();
 		this.subs = [];
 		this.ready = false;
@@ -287,6 +355,7 @@ export class ToolLayout {
 		if (!saved) return false;
 		try {
 			this.dock.fromJSON(saved.layout);
+			for (const panel of this.dock.panels.filter(panel => !this.items.has(panel.id))) this.dock.removePanel(panel);
 			for (const id of saved.missing) this.addNew(id);
 			if (saved.missing.length) this.save();
 			return true;
@@ -336,6 +405,16 @@ export class ToolLayout {
 	panelFor(id) {
 		const item = this.items.get(id);
 		const element = h('div', { class: 'dock-panel' });
+		const extra = this.extras.get(id);
+		if (extra) {
+			element.append(extra.el);
+			let sub = null;
+			return {
+				element,
+				init: params => (sub = params.api.onDidVisibilityChange(() => this.refresh())),
+				dispose: () => sub?.dispose(),
+			};
+		}
 		if (!item) return { element, init() {} };
 		element.append(item.el);
 		let api = null;
@@ -355,6 +434,8 @@ export class ToolLayout {
 
 	/** A tab with the tool's name and the unread dot; there is no close button, since a tool can't be closed. */
 	tabFor(id) {
+		const extra = this.extras.get(id);
+		if (extra) return this.extraTab(extra);
 		const item = this.items.get(id);
 		const element = h('div', { class: 'dv-default-tab dock-tab' }, h('span', { class: 'dv-default-tab-content' }, item?.title ?? id));
 		if (item) {
@@ -365,6 +446,29 @@ export class ToolLayout {
 			element,
 			init() {},
 			dispose: () => item?.dockTabs.delete(element),
+		};
+	}
+
+	/** A tool's own panel can be closed: its tab has a close button, which asks the tool (a viewer closing a stream). */
+	extraTab(extra) {
+		const close = h('button', {
+			type: 'button',
+			class: 'icon-btn small dock-tab-close',
+			title: `Close ${extra.title}`,
+			'aria-label': `Close ${extra.title}`,
+			// dockview starts a drag or makes the tab active on pointerdown; this button only closes.
+			onpointerdown: event => event.stopPropagation(),
+			onclick: event => {
+				event.stopPropagation();
+				extra.onClose();
+			},
+		}, icon('close'));
+		const element = h('div', { class: 'dv-default-tab dock-tab' }, h('span', { class: 'dv-default-tab-content' }, extra.title), close);
+		extra.tabs.add(element);
+		return {
+			element,
+			init() {},
+			dispose: () => extra.tabs.delete(element),
 		};
 	}
 
