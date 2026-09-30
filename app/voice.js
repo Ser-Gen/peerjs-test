@@ -16,17 +16,17 @@ export const MAX_VOLUME = 2; // a member can be turned up to 200 % (an <audio> e
 /*
  * Voice in the room: an open microphone with a mute button, for everyone who joins it.
  *
- * Protocol (ch: 'voice'). Media goes over a peerjs call with metadata {kind: 'voice'}.
+ * Protocol (ch: 'voice'). Media goes over a media call (app/mediacall.js) with metadata {kind: 'voice'}.
  *   state {on, muted, mic}   the sender's voice state; sent on every link up and whenever it changes
- *   hangup {call}            the sender ended that call (its peerjs connection ID) while both stay in voice;
- *                            peerjs doesn't tell the other side, which would keep a dead call and never dial again
+ *   hangup {call}            the sender ended that call (its connection ID) while both stay in voice. Closing a
+ *                            call tells the other side too; this says which call even if that message is late
  *
  * One call per pair, not per direction: of two members in voice the one with a microphone dials, and when
  * both have one the lower peer ID dials (the rule the links use). The other answers with its own
  * microphone, so a single connection carries both voices. A device with no microphone, or one that refused
  * it, joins as a listener: it is always muted, never dials, and is called by the others.
  *
- * Mute is `track.enabled = false` plus a `state` message, because peerjs cannot renegotiate a call;
+ * Mute is `track.enabled = false` plus a `state` message, which keeps the call as it is;
  * joining and leaving voice do close and re-make the calls with the members it concerns.
  */
 export class Voice extends Emitter {
@@ -52,6 +52,7 @@ export class Voice extends Emitter {
 			room.on('link-up', member => this.onLinkUp(member)),
 			room.on('link-down', member => this.onLinkDown(member)),
 			room.on('state', () => this.onState()),
+			room.on('members', () => this.onMembers()),
 		];
 	}
 
@@ -213,7 +214,7 @@ export class Voice extends Emitter {
 		this.changed();
 	}
 
-	/** A call needs the signaling server: when it comes back, pick up the pairs that were left without one. */
+	/** When the room is back to normal (the link or the server was away), pick up the pairs left without a call. */
 	onState() {
 		if (!this.active || this.room.state !== 'open' || this.room.signalingLost) return;
 		for (const peer of this.peers.values()) {
@@ -221,6 +222,19 @@ export class Voice extends Emitter {
 			peer.tries = 0;
 			this.sync(peer);
 		}
+	}
+
+	/** A member renamed itself: the voice sheet and the room bar use the name kept here. */
+	onMembers() {
+		let changed = false;
+		for (const peer of this.peers.values()) {
+			const name = this.room.member(peer.peerId)?.name;
+			if (name && name !== peer.name) {
+				peer.name = name;
+				changed = true;
+			}
+		}
+		if (changed) this.changed();
 	}
 
 	onMessage(msg, member) {

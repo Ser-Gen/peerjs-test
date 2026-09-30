@@ -25,7 +25,7 @@ const USER_LABEL = 'pk';
 const VISIBLE_RE = /^[\x21-\x7e]{1,256}$/; // visible ASCII, no spaces
 
 // peerjs 1.5.5 defaults, kept when there is no TURN server to use.
-const PEERJS_ICE = [
+export const PEERJS_ICE = [
 	{ urls: 'stun:stun.l.google.com:19302' },
 	{ urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp' },
 ];

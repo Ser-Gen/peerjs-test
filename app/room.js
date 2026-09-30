@@ -2,9 +2,10 @@
 import { sameText } from './crypto.js';
 import { cleanName, device } from './device.js';
 import { Emitter } from './emitter.js';
+import { MediaCall, readSignal } from './mediacall.js';
 import { CH, LABEL, PROTOCOL_VERSION } from './protocol.js';
 import { roomIds, roomProof } from './rooms.js';
-import { detectRoute, parseGuestTurn } from './turn.js';
+import { PEERJS_ICE, detectRoute, parseGuestTurn } from './turn.js';
 import { randomId, randomInt, sleep } from './util.js';
 
 const PING_INTERVAL = 2000;
@@ -28,6 +29,7 @@ const MEET_DELAY = 3000; // after the last change in the members' links: a newco
 const MAX_GONE = 200;
 const MAX_EARLY = 1000; // tool messages kept between authentication and the link being up
 export const MAX_MEMBERS = 8;
+const MAX_CALLS = 8; // media calls with one member at a time (voice and a stream need two)
 
 // Backpressure for the binary channel: pause above HIGH, resume below LOW.
 const HIGH_WATER = 2 * 1024 * 1024;
@@ -314,7 +316,7 @@ class Link {
  * are linked to and this device isn't (two newcomers at once) is dialed by the lower peer ID of the two.
  *
  * Events: 'state' (state, error), 'members' (list or details changed), 'link-up' / 'link-down' (member, reason),
- * `msg:<ch>` (message, member), 'binary' (ArrayBuffer, member), 'call' (MediaConnection, member),
+ * `msg:<ch>` (message, member), 'binary' (ArrayBuffer, member), 'call' (MediaCall, member),
  * 'rtt' (member), 'links' (member whose own direct links changed), 'turn' (credentials adopted from a member).
  */
 export class Room extends Emitter {
@@ -336,6 +338,7 @@ export class Room extends Emitter {
 		this.isAnchor = false;
 		this.links = new Map(); // peerId → Link with that member (dialing, authed or up)
 		this.incoming = new Set(); // links dialed by others that aren't authenticated yet
+		this.calls = new Map(); // call ID → MediaCall with a member (app/mediacall.js)
 		this.entries = new Set(); // entry links: ours to the anchor, or newcomers' to our anchor peer
 		this.redials = new Map(); // peerId → { attempts, timer }
 		this.gone = new Set(); // peer IDs that left or can't link with us, oldest first
@@ -475,10 +478,51 @@ export class Room extends Emitter {
 		return Math.min(DEFAULT_MESSAGE_SIZE, max > 0 ? max : DEFAULT_MESSAGE_SIZE);
 	}
 
-	/** Send a media stream to a member (peerjs MediaConnection). Null when that isn't possible now. */
+	/**
+	 * Send a media stream to a member: a MediaCall negotiated over the link (app/mediacall.js), so it needs the
+	 * link and not the signaling server. Null when that isn't possible now.
+	 */
 	call(to, stream, metadata, options = {}) {
-		if (!this.member(to) || !this.peer?.open) return null;
-		return this.peer.call(to, stream, { ...options, metadata }) ?? null;
+		if (this.links.get(to)?.state !== 'up' || typeof RTCPeerConnection !== 'function') return null;
+		const call = new MediaCall({ room: this, peerId: to, id: randomId(8), metadata, caller: true, stream, sdpTransform: options.sdpTransform });
+		this.calls.set(call.connectionId, call);
+		call._start();
+		return call;
+	}
+
+	/** What a media call's RTCPeerConnection is made with: the same ICE servers as the links. */
+	get rtcConfig() {
+		return this.peerOptions.config ?? { iceServers: PEERJS_ICE, sdpSemantics: 'unified-plan' };
+	}
+
+	_forgetCall(call) {
+		if (this.calls.get(call.connectionId) === call) this.calls.delete(call.connectionId);
+	}
+
+	_onSignal(link, raw) {
+		const msg = readSignal(raw);
+		if (!msg) return;
+		const call = this.calls.get(msg.call);
+		if (call && call.peer !== link.peerId) return; // another member's call
+		switch (msg.type) {
+			case 'offer': {
+				if (call) return call._onOffer(msg.sdp);
+				if ([...this.calls.values()].filter(other => other.peer === link.peerId).length >= MAX_CALLS) {
+					link.send(CH.RTC, { type: 'close', call: msg.call });
+					return;
+				}
+				const incoming = new MediaCall({ room: this, peerId: link.peerId, id: msg.call, metadata: msg.meta, caller: false, offer: msg.sdp });
+				this.calls.set(incoming.connectionId, incoming);
+				this.emit('call', incoming, link.member);
+				return;
+			}
+			case 'answer':
+				return call?._onAnswer(msg.sdp);
+			case 'ice':
+				return call?._onIce(msg.candidate);
+			case 'close':
+				return call?.close({ notify: false });
+		}
 	}
 
 	/** Whether two members (this device included) have a direct link, as far as this device knows. */
@@ -512,12 +556,7 @@ export class Room extends Emitter {
 			if (peer === this.peer) this._onConnection(conn);
 			else closeConn(conn);
 		});
-		peer.on('call', call => {
-			const link = peer === this.peer ? this.links.get(call.peer) : null;
-			// A call can arrive just before the file connection is up.
-			if (link && (link.state === 'up' || link.state === 'authed')) this.emit('call', call, link.member);
-			else call.close();
-		});
+		peer.on('call', call => call.close()); // media calls go over the links (app/mediacall.js), not through the server
 		peer.on('disconnected', () => {
 			if (peer !== this.peer || !this.opened || this.state === 'failed') return;
 			this.signalingLost = true;
@@ -863,6 +902,10 @@ export class Room extends Emitter {
 			this.emit('members');
 			if (!this.halting) this._shareLinks();
 		}
+		// Its media calls were negotiated over this link; a new link to the same member makes new ones.
+		if (!this.links.has(link.peerId)) {
+			for (const call of [...this.calls.values()]) if (call.peer === link.peerId) call.close({ notify: false });
+		}
 		if (this.destroyed || this.halting || this.state === 'failed' || FINAL_REASONS.has(link.reason)) {
 			if (link.reason === 'peer-unavailable' || link.reason === 'bye') this._clearRedial(link.peerId);
 		} else if (!this.links.has(link.peerId)) {
@@ -897,6 +940,10 @@ export class Room extends Emitter {
 	_onLinkMessage(link, msg) {
 		if (link.entry) {
 			if (link.dialer && msg.ch === CH.SYS && msg.type === 'welcome') this._onWelcome(link, msg);
+			return;
+		}
+		if (msg.ch === CH.RTC) {
+			if (link.state === 'up') this._onSignal(link, msg);
 			return;
 		}
 		if (msg.ch !== CH.SYS) {

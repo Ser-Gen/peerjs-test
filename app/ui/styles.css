@@ -1648,7 +1648,15 @@ progress::-moz-progress-bar {
 	color: #fff;
 	font: 0.7rem/1.5 system-ui, sans-serif;
 	white-space: nowrap;
-	pointer-events: none;
+	transition: opacity 0.2s ease-in-out;
+}
+
+/* Another member's name can cover a word. Pointing at it fades it out: transparent, it still has the pointer, so it
+   doesn't come back under it. A tap on a name hides them all for a moment (.names-peek, editor.js). */
+.editor-host .peerkit-yname:hover,
+.editor-host.names-peek .peerkit-yname,
+.editor-host.names-peek .cm-ySelectionInfo {
+	opacity: 0 !important;
 }
 
 .editor-message {

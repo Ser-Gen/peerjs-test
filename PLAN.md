@@ -963,6 +963,81 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 - [ ] Two phones join voice for the first time on that phone (the permission prompt appears): if it says "connecting…", it sorts itself out within about 15 s without leaving voice.
 - [ ] Draw on the whiteboard with the mouse while a phone watches, several times: every line stays on both screens.
 
+### Names over the others' cursors covering words (2026-09-30, 0.13.5)
+
+**Why:** a user's suggestion. In the Editor, the name label above another member's cursor can cover the words written there. Pointing at the label should hide it, so the text underneath can be read.
+
+**As built**
+- **With a mouse:** pointing at a name fades it out, and moving away brings it back. This works in both CodeMirror and Monaco.
+  - The name becomes transparent rather than removed, so the pointer stays on it and it doesn't flicker back.
+  - In Monaco the name now takes the pointer: a click on it doesn't place the cursor there.
+- **On a touch screen:** there is no hover, so a tap on a name hides all the names for 3 seconds.
+- **Tests:** the editor test grew from 27 to 31 checks for the tap. jsdom can't hover, so the hover rule itself is only checked on a real device.
+
+**Checklist**
+- [ ] Laptop: another member's cursor sits in a line of text. Point at their name: it fades out and the words underneath can be read. Move away: it comes back. Try this in CodeMirror and in Monaco (Settings → Editor).
+- [ ] Phone: tap a name. All the names disappear for about 3 seconds, then come back.
+
+### A new name that didn't reach everywhere (2026-09-30, 0.13.5)
+
+**Why:** reported by users: after changing the device name in Settings, the old name stayed in places in the room.
+
+**What was found**
+- The room already sent the new name to everyone, and the member chips followed it.
+- But several places kept a copy of the name and never looked again:
+  - **Chat:** earlier messages kept the name they were sent with, and so did read labels, "has it" and "Removed by".
+  - **Editor:** the name above your cursor never changed. The Editor also read the name from `device` instead of the room.
+  - **Whiteboard:** the name on your pointer and in the board list never changed.
+  - **Voice:** the settings sheet kept the old name.
+  - **Stream:** the bar and the stage kept the old name ("Sharing with …", "Connecting to …").
+
+**As built**
+- **Chat:** a device is shown by its current name. That is the member's name if they are online, else the name carried by their read mark, else the one stored with the message. So earlier messages, read labels and file cards follow a rename.
+- **Read mark:** after a rename, a device writes its read mark again with the new name, so the new name reaches devices that are never online at the same time.
+- **Editor and Whiteboard:** the new name goes into what the others see (awareness).
+- **Voice and Stream:** they update their copies when the room reports a change.
+- **Not changed:** "joined" / "left" lines keep the name from that moment.
+- **Tests:**
+  - The chat test grew from 77 to 81 checks.
+  - The voice test grew from 55 to 56, the editor test from 26 to 27, and the whiteboard test from 94 to 96.
+  - The Stream tool's part has no check of its own.
+  - 497 checks in all.
+
+**Checklist**
+- [ ] With two devices in a room with some chat history, rename one in Settings. On the other device the new name shows at once on its earlier messages, on the member chip, under "Read by", in the voice sheet, on its cursor in a shared document and on its pointer on a board.
+
+### Voice and screen sharing that stay on "connecting…" or black until a reload (2026-09-30, 0.13.5)
+
+**Why:** reported again, with no way found to make it happen: two people join voice, both see "connecting…" and hear nothing, although each sees their own speaking mark; a shared screen changes both screens as if it had started, but the viewer sees black. After several reloads, one after another, it works. Once, Resume after a reload (a new capture, so a new call) made the screen share work.
+
+**What was found**
+- Everything that worked (chat, editor, whiteboard, files) goes over the links, which are direct between the devices once made. Every media call was negotiated through the signaling server, anew, each time: offer, answer and ICE candidates as server messages. That is the one difference between what worked and what didn't.
+- peerjs doesn't notice when its websocket to the server goes quiet without closing: it sends a heartbeat every 5 s but never expects an answer, and `socket.send` drops a message without a word when the socket isn't open. The server itself forgets a client whose heartbeats stop arriving. Either way the room looks fine (the links don't need the server) while every call's negotiation is lost somewhere. A reload makes a new websocket, which is why reloading "fixed" it, and why dialling again 10 s later (voice did that) never did.
+- Both symptoms fit a negotiation that never finished: the viewer's black picture is the video track handed over by the offer before a single frame came through (the Stream tool took that for "playing"), and voice's "connecting…" is a track that never unmuted.
+- peerjs closes a call only when ICE fails, has no ICE restart, and doesn't tell the other end when a call is closed.
+- This is the likeliest cause, not a proven one: no console log from a failing session was available. The fix below takes the server out of calls altogether, so it holds whatever went wrong between the devices and the server.
+
+**As built**
+- **Media calls over the link** (`app/mediacall.js`, `PROTOCOL_VERSION` 7): `room.call` makes an `RTCPeerConnection` of its own (the same ICE servers as the links) and negotiates it on the link, ch `rtc`: `offer` / `answer` / `ice` / `close`. No server is involved, so a call works whenever the chat does, even with the server away. The object has peerjs's shape, so voice and the Stream tool are unchanged.
+- Closing a call tells the other end. ICE that fails is restarted by the caller twice, over the link, before the call ends. A link that goes down closes its calls on both sides.
+- Everything in a signal is checked: the call ID, the SDP size, the metadata.
+- **No black "playing" picture:** the viewer says "Connecting to …" until the first frame arrives (the video track unmutes). After that a still screen keeps its picture.
+- A version-6 device and a version-7 device refuse to link ("Version mismatch"), so both need the update.
+- **Tests:**
+  - The room test grew from 36 to 43 checks: a call while the server is away, an ICE restart, a route that never works, closing both ends, forged signals, and a link that drops.
+  - The desktop test grew from 28 to 31: "Connecting…" until the first frame, then the picture, which stays through a mute.
+  - `dom/fakenet.mjs` has a `FakeRTCPeerConnection`.
+  - 489 checks in all, before the rename fix.
+
+**Not done**
+- The member websocket still isn't checked. Nothing needs the server once the room is joined, except joining, the anchor and dialling a member again. A quiet socket is noticed only when peerjs notices, so it can still slow down a newcomer's way in.
+
+**Checklist**
+- [ ] Two devices join voice: both hear each other within a couple of seconds, many times in a row, including after one of them reloads.
+- [ ] Share a screen: the viewer sees "Connecting to …" briefly, then the picture, never a black box. Stop and start again several times.
+- [ ] Share a screen, then switch the laptop's Wi-Fi off and on (or move a phone between Wi-Fi and mobile data): the picture comes back by itself within a few seconds.
+- [ ] A device still on 0.13.4 gets "Version mismatch" until it reloads.
+
 ### Read marks in the Chat (2026-09-29, 0.13.4)
 
 **Why:** a text message showed nothing after sending; only files said "Delivered". You want to see that someone has read it.

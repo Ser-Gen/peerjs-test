@@ -386,7 +386,72 @@ await advance(5 * 60000);
 check('two members that can’t reach each other stop trying', dials() >= 1 && dials() <= 7 && names(u0) === 'U1,U2', `${dials()} dials`);
 net.blocked = () => false;
 
-const unexpected = warnings.filter(w => !/peer error|connection error/.test(w));
+// 14. Media calls are negotiated over the link: they work while the signaling server is away, ICE that fails is
+// restarted, and closing one end closes the other.
+const { FakeRTCPeerConnection, FakeMediaStream, rtc } = await import('./dom/fakenet.mjs');
+globalThis.RTCPeerConnection = FakeRTCPeerConnection;
+const m1 = device('M1', newRoomCode(), { claimFirst: true });
+await advance(200);
+const m2 = device('M2', m1.code, { known: false });
+await advance(1000);
+m1.peer.open = m2.peer.open = false; // the server is away: a call must not need it
+const incoming = [];
+m2.on('call', (call, member) => incoming.push([call, member]));
+const mic1 = new FakeMediaStream(['audio']);
+const mic2 = new FakeMediaStream(['audio']);
+const heard = { m1: null, m2: null };
+const out = m1.call(m2.self.peerId, mic1, { kind: 'voice' });
+out.on('stream', stream => (heard.m1 = stream));
+await advance(100);
+check('a call reaches the member over the link, with its metadata, while the server is away',
+	incoming.length === 1 && incoming[0][0].metadata.kind === 'voice' && incoming[0][1].name === 'M1' && incoming[0][0].connectionId === out.connectionId);
+const inc = incoming[0][0];
+inc.on('stream', stream => (heard.m2 = stream));
+inc.answer(mic2);
+await advance(100);
+check('once answered, each side gets the other’s stream over one connection', heard.m1 === mic2 && heard.m2 === mic1 && out.open && inc.open
+	&& out.peerConnection.iceConnectionState === 'connected' && inc.peerConnection.iceConnectionState === 'connected');
+out.peerConnection._ice('failed');
+inc.peerConnection._ice('failed');
+await advance(100);
+check('failed ICE is restarted by the caller, over the link, and the call carries on',
+	!out.closed && !inc.closed && out.peerConnection.localDescription.sdp.includes('restart:1') && out.peerConnection.iceConnectionState === 'connected' && out.restarts === 0);
+out.close();
+await advance(50);
+check('closing a call closes the other end too', inc.closed && m1.calls.size === 0 && m2.calls.size === 0);
+
+rtc.block = () => true;
+const doomed = m1.call(m2.self.peerId, mic1, { kind: 'voice' });
+await advance(50);
+incoming.at(-1)[0].answer(mic2);
+await advance(1000);
+check('a call with no route gives up after two restarts, on both sides', doomed.closed && incoming.at(-1)[0].closed && m1.calls.size === 0 && m2.calls.size === 0,
+	`${doomed.closed} ${incoming.at(-1)[0].closed}`);
+rtc.block = () => false;
+
+const forged = [];
+m1.on('call', call => forged.push(call));
+const toM1 = m2.links.get(m1.self.peerId);
+toM1.send(CH.RTC, { type: 'offer', call: 'not-a-call-id', sdp: 'v=0' });
+toM1.send(CH.RTC, { type: 'offer', call: '0123456789abcdef', sdp: 'x'.repeat(40000) });
+toM1.send(CH.RTC, { type: 'answer', call: 'fedcba9876543210', sdp: 'v=0' });
+toM1.send(CH.RTC, { type: 'ice', call: 'fedcba9876543210', c: { candidate: 'x' } });
+toM1.send(CH.RTC, { type: 'offer', call: '0123456789abcdef', sdp: 'v=0', meta: [1, 2, 3] });
+await advance(50);
+check('bad call IDs, oversized descriptions and stray answers are ignored; odd metadata becomes empty',
+	forged.length === 1 && forged[0].connectionId === '0123456789abcdef' && Object.keys(forged[0].metadata).length === 0);
+forged[0].close();
+
+const last = m1.call(m2.self.peerId, mic1, { kind: 'voice' });
+await advance(50);
+incoming.at(-1)[0].answer(mic2);
+await advance(50);
+m1.links.get(m2.self.peerId).ctl.close();
+await advance(100);
+check('a link that drops ends its calls on both sides', last.closed && incoming.at(-1)[0].closed);
+m1.peer.open = m2.peer.open = true;
+
+const unexpected = warnings.filter(w => !/peer error|connection error|media call/.test(w));
 check('no unexpected warnings', unexpected.length === 0, unexpected.slice(0, 3).join(' | '));
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);

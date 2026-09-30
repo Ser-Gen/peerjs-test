@@ -48,10 +48,6 @@ function timeText(time) {
 	return `${date.toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${clock}`;
 }
 
-function sender(msg) {
-	return h('div', { class: 'sender', style: `--who: ${msg.color}` }, msg.name);
-}
-
 function names(list) {
 	const all = [...new Set(list.map(item => item.name))];
 	return all.length > 2 ? `${all.slice(0, 2).join(', ')} and ${all.length - 2} more` : all.join(' and ');
@@ -144,8 +140,10 @@ class ChatTool {
 			room.on('link-up', member => this.addNote(`${member.name} joined`)),
 			room.on('link-down', (member, reason) => this.addNote(reason === 'bye' ? `${member.name} left` : `Lost the connection to ${member.name}`)),
 			room.on('members', () => {
+				this.timeline?.rename(); // this device's own name may have changed
 				this.renderCards(); // who is online decides where a kept file can come from
 				this.renderReads(); // and whether everyone here has read a message
+				this.renderNames(); // and names change: a member renamed itself
 			}),
 			this.transfers.on('change', id => this.renderCard(id)),
 			this.transfers.on('progress', id => this.renderCard(id, false)),
@@ -198,7 +196,10 @@ class ChatTool {
 		this.timeline.on('change', change => this.onChange(change));
 		this.timeline.on('held', () => this.renderCards());
 		this.timeline.on('removed', ids => this.onRemoved(ids));
-		this.timeline.on('reads', () => this.renderReads());
+		this.timeline.on('reads', () => {
+			this.renderReads();
+			this.renderNames(); // a read mark carries its device's newest name
+		});
 		this.render();
 		this.renderMessages({ bottom: true });
 		await this.reconcile();
@@ -271,9 +272,35 @@ class ChatTool {
 		return null;
 	}
 
+	/**
+	 * The name to show for a device: its name now if it is here, else the newest one the room document knows
+	 * (read marks carry it), else the one stored with what is being shown. A rename reaches every place at once.
+	 */
+	nameOf(deviceId, stored) {
+		if (deviceId && deviceId === this.room.self.deviceId) return this.room.self.name;
+		return this.room.members.find(member => member.deviceId === deviceId)?.name ?? this.timeline?.nameOf(deviceId) ?? stored;
+	}
+
+	/** Names in a list of {deviceId, name}, as they are now. */
+	named(list) {
+		return list.map(item => ({ ...item, name: this.nameOf(item.deviceId, item.name) }));
+	}
+
+	sender(msg) {
+		return h('div', { class: 'sender', style: `--who: ${msg.color}` }, this.nameOf(msg.from, msg.name));
+	}
+
+	renderNames() {
+		for (const node of this.nodes.values()) {
+			if (!node.sender) continue;
+			const name = this.nameOf(node.msg.from, node.msg.name);
+			if (node.sender.textContent !== name) node.sender.textContent = name;
+		}
+	}
+
 	/** "Read by …" under this device's own messages. */
 	readLabel(msg) {
-		const readers = this.timeline.readersOf(msg);
+		const readers = this.named(this.timeline.readersOf(msg));
 		if (!readers.length) return { text: '', title: '' };
 		const here = this.room.members;
 		const everyone = here.length > 0 && here.every(member => readers.some(reader => reader.deviceId === member.deviceId));
@@ -703,12 +730,13 @@ class ChatTool {
 			onclick: async () => toast((await copyText(msg.text)) ? 'Copied' : 'Copy failed'),
 		}, icon('copy'));
 		const read = mine ? h('span', { class: 'read' }) : null;
+		const from = mine ? null : this.sender(msg);
 		const root = h('div', { class: `msg ${mine ? 'mine' : 'theirs'}`, 'data-id': msg.id },
 			h('div', { class: 'bubble' },
-				!mine && sender(msg),
+				from,
 				h('div', { class: 'text' }, linkify(msg.text)),
 				h('div', { class: 'meta' }, read, h('time', { datetime: new Date(msg.time).toISOString() }, timeText(msg.time)), copy)));
-		return { msg, root, read };
+		return { msg, root, read, sender: from };
 	}
 
 	fileNode(msg) {
@@ -732,9 +760,10 @@ class ChatTool {
 			}, icon('trash')),
 		};
 		const read = mine ? h('span', { class: 'read' }) : null;
+		const from = mine ? null : this.sender(msg);
 		card.root = h('div', { class: `msg ${mine ? 'mine' : 'theirs'}`, 'data-id': msg.id },
 			h('div', { class: 'bubble file' },
-				!mine && sender(msg),
+				from,
 				h('div', { class: 'file-head' },
 					icon('file'),
 					h('div', { class: 'file-title' },
@@ -745,7 +774,7 @@ class ChatTool {
 				card.details,
 				h('div', { class: 'file-foot' }, card.status, card.actions),
 				h('div', { class: 'meta' }, read, h('time', { datetime: new Date(msg.time).toISOString() }, timeText(msg.time)), card.remove)));
-		const node = { msg, root: card.root, card, read };
+		const node = { msg, root: card.root, card, read, sender: from };
 		this.drawCard(card, true);
 		return node;
 	}
@@ -782,7 +811,7 @@ class ChatTool {
 		const openers = () => actions.push(button('Open', null, () => this.open(msg)), button('Download', 'download', () => this.save(msg)));
 		if (removed) {
 			state = 'removed';
-			status = `Removed by ${removed.by}`;
+			status = `Removed by ${this.nameOf(removed.from, removed.by)}`;
 		} else if (receiving) {
 			state = 'receiving';
 			status = incoming.state === 'checking' ? 'Checking…' : this.progressText(incoming.done, file.size, incoming.meter.rate);
@@ -812,7 +841,7 @@ class ChatTool {
 				});
 			}
 		} else if (file.keep) {
-			const holders = this.timeline.holders(id).filter(holder => holder.deviceId !== this.room.self.deviceId);
+			const holders = this.named(this.timeline.holders(id).filter(holder => holder.deviceId !== this.room.self.deviceId));
 			const online = this.onlineHolders(id);
 			const lead = [
 				incoming?.state === 'failed' && incoming.error,

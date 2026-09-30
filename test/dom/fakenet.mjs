@@ -259,3 +259,100 @@ const sendersFor = stream => (stream?.getTracks() ?? []).map(track => {
 	};
 	return sender;
 });
+
+// --- fake RTCPeerConnection, for media calls negotiated over a link (app/mediacall.js) ---
+
+const pcs = new Map();
+let pcCount = 0;
+
+/**
+ * Enough of RTCPeerConnection for app/mediacall.js. An SDP names the connection that made it; applying the
+ * other side's description pairs the two, hands over the tracks it sends ('track', with its stream, the same
+ * objects the other side added) and, once both have both descriptions, connects ICE. `rtc.block` stops ICE
+ * from ever connecting between two connections, so a failure can be simulated.
+ */
+export const rtc = { block: () => false, made: [] };
+
+export class FakeRTCPeerConnection {
+	constructor(config = {}) {
+		this.id = ++pcCount;
+		this.config = config;
+		this.senders = [];
+		this.streams = [];
+		this.localDescription = null;
+		this.remoteDescription = null;
+		this.signalingState = 'stable';
+		this.iceConnectionState = 'new';
+		this.connectionState = 'new';
+		this.candidates = [];
+		this.other = null;
+		this.closed = false;
+		this.onicecandidate = this.ontrack = this.oniceconnectionstatechange = null;
+		pcs.set(this.id, this);
+		rtc.made.push(this);
+	}
+	addTrack(track, stream) {
+		const sender = { track, async replaceTrack(next) { sender.track = next; } };
+		this.senders.push(sender);
+		if (stream && !this.streams.includes(stream)) this.streams.push(stream);
+		return sender;
+	}
+	getSenders() {
+		return [...this.senders];
+	}
+	async createOffer(options = {}) {
+		return { type: 'offer', sdp: `v=0\r\na=fake-pc:${this.id}\r\na=restart:${options.iceRestart ? 1 : 0}\r\n` };
+	}
+	async createAnswer() {
+		return { type: 'answer', sdp: `v=0\r\na=fake-pc:${this.id}\r\n` };
+	}
+	async setLocalDescription(desc) {
+		if (this.closed) throw new Error('closed');
+		this.localDescription = desc;
+		this.signalingState = desc.type === 'offer' ? 'have-local-offer' : 'stable';
+		setTimeout(() => {
+			if (!this.closed) this.onicecandidate?.({ candidate: { candidate: `candidate:${this.id} 1 udp 1 192.0.2.1 9 typ host`, sdpMid: '0', sdpMLineIndex: 0 } });
+		}, 1);
+	}
+	async setRemoteDescription(desc) {
+		if (this.closed) throw new Error('closed');
+		const id = Number(/a=fake-pc:(\d+)/.exec(desc.sdp)?.[1]);
+		const other = pcs.get(id);
+		if (!other) throw new Error('unknown description');
+		const fresh = this.other !== other;
+		this.other = other;
+		this.remoteDescription = desc;
+		this.signalingState = desc.type === 'offer' ? 'have-remote-offer' : 'stable';
+		if (fresh) for (const stream of other.streams) for (const track of stream.getTracks()) this.ontrack?.({ track, streams: [stream] });
+		if (desc.type === 'answer') this._connect();
+	}
+	async addIceCandidate(candidate) {
+		if (!this.remoteDescription) throw new Error('no remote description');
+		this.candidates.push(candidate);
+	}
+	/** After the answer: both ends are negotiated, ICE runs (or fails) for both. */
+	_connect() {
+		const other = this.other;
+		this._ice('checking');
+		other._ice('checking');
+		setTimeout(() => {
+			if (this.closed || other.closed) return;
+			const state = rtc.block(this, other) ? 'failed' : 'connected';
+			this._ice(state);
+			other._ice(state);
+		}, 3);
+	}
+	_ice(state) {
+		if (this.closed || this.iceConnectionState === state) return;
+		this.iceConnectionState = state;
+		this.connectionState = state;
+		this.oniceconnectionstatechange?.();
+	}
+	close() {
+		this.closed = true;
+		this.signalingState = 'closed';
+		this.iceConnectionState = 'closed';
+		this.connectionState = 'closed';
+		pcs.delete(this.id);
+	}
+}

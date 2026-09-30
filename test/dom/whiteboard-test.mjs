@@ -123,6 +123,7 @@ const { FakePeer } = await import('./fakenet.mjs');
 globalThis.Peer = window.Peer = FakePeer;
 
 const { Room } = await import(`${ROOT}/app/room.js`);
+const { Emitter } = await import(`${ROOT}/app/emitter.js`);
 const { newRoomCode } = await import(`${ROOT}/app/rooms.js`);
 const { CH } = await import(`${ROOT}/app/protocol.js`);
 const { RoomDoc, boardDocName } = await import(`${ROOT}/app/roomdoc.js`);
@@ -209,9 +210,10 @@ function makeCtx(letter, tool, handOffs) {
 
 function device(name, letter, { withChat = false, start = true } = {}) {
 	const id = letter.repeat(16);
-	const room = new Room({ code, ice: ice(), identity: { id, name } });
+	const identity = Object.assign(new Emitter(), { id, name }); // says when its name changes, like app/device.js
+	const room = new Room({ code, ice: ice(), identity });
 	if (start) room.start();
-	return mountOn({ name, id, letter, room, withChat });
+	return mountOn({ name, id, letter, room, withChat, identity });
 }
 
 function mountOn(dev) {
@@ -532,6 +534,14 @@ await until('a rename reaches the others’ list', () => {
 A.root.querySelector('.doc-switch').click();
 const sketchesItem = [...lastDialog().querySelectorAll('.doc-item')].find(item => item.textContent.includes('Sketches'));
 check('the list shows who is on which board', sketchesItem.querySelector('.presence-chip')?.textContent === 'Phone', sketchesItem.textContent);
+
+B.identity.name = 'Pixel';
+B.identity.emit('change');
+await until('a rename in Settings reaches the others’ presence', () => [...deskDoc.awareness.getStates().values()].some(state => state?.user?.name === 'Pixel'),
+	3000, () => [...deskDoc.awareness.getStates().values()].map(state => state?.user?.name).join());
+B.identity.name = 'Phone';
+B.identity.emit('change');
+await until('(and back)', () => [...deskDoc.awareness.getStates().values()].some(state => state?.user?.name === 'Phone'));
 sketchesItem.click();
 await until('A switches to it from the list', () => boardName(A) === 'Sketches');
 byLabel(A.root, 'Board options').click();

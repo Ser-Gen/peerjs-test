@@ -98,5 +98,7 @@ export function codeTheme(lib) {
 			lineHeight: 1.5,
 			whiteSpace: 'nowrap',
 		},
+		// A name can cover a word: pointing at it fades it out (and it keeps the hover, so it doesn't flicker back).
+		'.cm-ySelectionCaret:hover > .cm-ySelectionInfo:hover': { opacity: 0 },
 	});
 }

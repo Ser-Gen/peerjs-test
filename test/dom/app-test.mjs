@@ -92,8 +92,9 @@ await import('fake-indexeddb/auto');
 for (const key of Object.getOwnPropertyNames(window).filter(k => /^(indexedDB|IDB)/.test(k))) {
 	Object.defineProperty(globalThis, key, { value: window[key], configurable: true, writable: true });
 }
-const { FakeMediaStream, FakePeer, net } = await import('./fakenet.mjs');
+const { FakeMediaStream, FakePeer, FakeRTCPeerConnection, FakeTrack, net } = await import('./fakenet.mjs');
 globalThis.Peer = window.Peer = FakePeer;
+globalThis.RTCPeerConnection = window.RTCPeerConnection = FakeRTCPeerConnection;
 
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -219,6 +220,18 @@ if (MODE === 'start') {
 	// A stream that starts brings its panel to the front.
 	phone.send(CH.STREAM, { type: 'start', id: 'cam1', kind: 'camera' });
 	await until('a stream from a member brings the Stream panel to the front', () => groupWith('Stream').front === 'Stream');
+	// Its call, over the link. A video track is muted until the first frame comes through: black until then.
+	const camTrack = new FakeTrack('video');
+	camTrack.muted = true;
+	phone.call(phone.members[0].peerId, new FakeMediaStream([camTrack]), { id: 'cam1', kind: 'camera' });
+	await until('the call is answered, and with no frame yet the stage says it is connecting instead of showing black',
+		() => $('.stream .remote').srcObject && $('.stream .remote').hidden && $('.stream .stage-message:not([hidden])')?.textContent.includes('Connecting to Phone'));
+	camTrack.muted = false;
+	camTrack.fire('unmute');
+	await until('the first frame brings up the picture', () => !$('.stream .remote').hidden && $('.stream .stage-message').hidden);
+	camTrack.muted = true;
+	camTrack.fire('mute');
+	check('and a still screen that sends nothing for a while keeps it', !$('.stream .remote').hidden);
 
 	// Float the chat, then narrow the window: the bottom tabs come back with the same tools, not new ones.
 	groupWith('Chat').button('Float').click();
@@ -372,7 +385,7 @@ if (MODE === 'start') {
 	check('the voice sheet keeps its slider while it is redrawn, so a drag goes on', Boolean(firstSlider) && slider() === firstSlider && firstSlider.isConnected);
 	buttonByText(document.querySelector('dialog[open]'), 'Done').click();
 	buttonByText(voiceBar(), 'Leave voice').click();
-	await until('leaving tells the member and ends the call', () => voiceCalls[0].other.closed && voiceHeard.some(m => m.type === 'state' && m.on === false));
+	await until('leaving tells the member and ends the call, on its side too', () => voiceCalls[0].closed && voiceHeard.some(m => m.type === 'state' && m.on === false));
 	check('this device drops its mark while the member stays in voice', !chips()[0].dataset.voice && chips()[1].dataset.voice === 'muted');
 	check('the bar offers Join voice again, and hides Mute’s neighbours', buttonByText(voiceBar(), 'Join voice') === muteButton
 		&& buttonByText(voiceBar(), 'Leave voice').hidden && $('[aria-label="Voice settings"]').hidden && voiceBar().textContent.includes('1 in voice'));

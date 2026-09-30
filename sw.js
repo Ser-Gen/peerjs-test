@@ -6,7 +6,7 @@
  * It is a classic worker, not a module, because Firefox still has no module workers.
  * VERSION must match APP_VERSION in app/version.js and SHELL must list the app's files; test/pwa-test.mjs checks both.
  */
-const VERSION = '0.13.4';
+const VERSION = '0.13.5';
 const CACHE = `peerkit-${VERSION}`;
 const SHARE_CACHE = 'peerkit-share'; // read and emptied by app/share.js; the names below are shared with it
 const SHARE_INDEX = 'share-index';
@@ -33,6 +33,7 @@ const SHELL = [
 	'app/device.js',
 	'app/docsync.js',
 	'app/emitter.js',
+	'app/mediacall.js',
 	'app/protocol.js',
 	'app/pwa.js',
 	'app/room.js',

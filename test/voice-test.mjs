@@ -384,5 +384,12 @@ check('when it comes back the pair calls by itself, without rejoining voice',
 check('and only then does it count as someone who can be heard',
 	e.voice.mark(f.room.self.peerId) === 'on' && e.voice.waiting.length === 0 && e.voice.statusOf(peerOf(e, f)) === null);
 
+// A member renames itself in Settings: the room says so with 'members', and the voice sheet names it anew.
+let sheetRedrawn = false;
+e.voice.on('change', () => (sheetRedrawn = true));
+f.room.self.name = 'Porch';
+e.room.emit('members');
+check('a member that renames itself is named anew in voice, and the sheet is redrawn', peerOf(e, f).name === 'Porch' && sheetRedrawn);
+
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);

@@ -17,9 +17,9 @@ const KIND_NOUN = { camera: 'camera', screen: 'shared screen' };
  * For now a stream goes to one member of the room (the choice is made when it starts). Started in an empty
  * room it waits with no viewer, and the first member to arrive gets it.
  *
- * Protocol (ch: 'stream'). Media goes over a peerjs MediaConnection with metadata {id, kind}; the
- * receiver answers without a stream. peerjs only closes a call once ICE fails, which takes long,
- * so start and stop are also sent on the control channel.
+ * Protocol (ch: 'stream'). Media goes over a media call (app/mediacall.js) with metadata {id, kind}; the
+ * receiver answers without a stream. Start and stop are also sent on the control channel, so the viewer
+ * knows what is coming before the call is up and why it ended.
  *   start {id, kind}   sender → receiver, just before the call
  *   stop  {id}         sender → receiver
  *   close {id}         receiver → sender: the viewer closed it, stop sending
@@ -192,7 +192,10 @@ class StreamTool {
 			room.on('call', (call, member) => this.onCall(call, member)),
 			room.on('link-up', member => this.onLinkUp(member)),
 			room.on('link-down', member => this.onLinkDown(member)),
-			room.on('members', () => this.render()),
+			room.on('members', () => {
+				this.renameSelf();
+				this.render();
+			}),
 			// While the room's voice is on it owns the microphone: a camera must not send it a second time.
 			ctx?.onVoiceChange?.(() => {
 				this.applyMic();
@@ -282,6 +285,16 @@ class StreamTool {
 		dialog.addEventListener('close', () => {
 			if (this.picker === dialog) this.picker = null;
 		});
+	}
+
+	/** A member renamed itself: the bar and the stage name the viewer and the sender as they are called now. */
+	renameSelf() {
+		const out = this.out;
+		const viewer = out?.toDevice ? this.room.members.find(member => member.deviceId === out.toDevice) : null;
+		if (viewer) out.toName = viewer.name;
+		const inc = this.in;
+		const sender = inc ? this.room.member(inc.from) : null;
+		if (sender) inc.fromName = sender.name;
 	}
 
 	savePrefs(patch) {
@@ -376,7 +389,7 @@ class StreamTool {
 		this.room.send(CH.STREAM, { type: 'start', id: out.id, kind: out.kind }, out.to);
 		const call = this.room.call(out.to, out.stream, { id: out.id, kind: out.kind }, callOptions(out.kind));
 		if (!call) {
-			toast('Could not start the stream: the signaling server is not reachable');
+			toast('Could not start the stream: the connection to them is not ready');
 			this.stopOutgoing();
 			return;
 		}
@@ -530,7 +543,7 @@ class StreamTool {
 			return;
 		}
 		this.dropIncoming();
-		this.in = { id, kind, from: member.peerId, fromName: member.name, call: null, stream: null, state: 'connecting', timer: null, locked: false };
+		this.in = { id, kind, from: member.peerId, fromName: member.name, call: null, stream: null, state: 'connecting', seen: false, unfollow: null, timer: null, locked: false };
 		this.lock(this.in);
 		this.ctx.activate();
 		this.render();
@@ -547,12 +560,14 @@ class StreamTool {
 		this.lock(inc); // released if it had ended before the sender came back
 		inc.call = call;
 		inc.state = 'connecting';
+		inc.seen = false;
 		call.on('stream', stream => {
 			if (this.in !== inc || inc.call !== call) return;
 			// Fires once per track, with the same stream.
 			if (this.remote.srcObject !== stream) this.remote.srcObject = stream;
 			inc.stream = stream;
 			inc.state = 'playing';
+			this.follow(inc, stream);
 			this.render();
 			this.play();
 		});
@@ -565,6 +580,33 @@ class StreamTool {
 		call.on('error', err => console.warn('[peerkit] media call error', err));
 		call.answer(undefined, callOptions(inc.kind)); // receive only
 		this.render();
+	}
+
+	/**
+	 * The call hands over its tracks as soon as it is negotiated, before a single frame has come through: a
+	 * video track is `muted` until then. Until it unmutes the stage keeps saying it is connecting, instead of
+	 * showing a black picture as if the stream were there. Once seen, a later mute (a still screen sends
+	 * nothing) keeps the picture.
+	 */
+	follow(inc, stream) {
+		inc.unfollow?.();
+		inc.unfollow = null;
+		const [track] = stream?.getVideoTracks?.() ?? [];
+		if (typeof track?.addEventListener !== 'function' || track.muted !== true) {
+			inc.seen = true;
+			return;
+		}
+		const onUnmute = () => {
+			inc.unfollow?.();
+			if (this.in !== inc) return;
+			inc.seen = true;
+			this.render();
+		};
+		track.addEventListener('unmute', onUnmute);
+		inc.unfollow = () => {
+			track.removeEventListener('unmute', onUnmute);
+			inc.unfollow = null;
+		};
 	}
 
 	pauseIncoming() {
@@ -582,6 +624,7 @@ class StreamTool {
 		const inc = this.in;
 		if (!inc) return;
 		inc.state = 'ended';
+		inc.unfollow?.();
 		clearTimeout(inc.timer);
 		closeCall(inc);
 		this.unlock(inc);
@@ -666,7 +709,7 @@ class StreamTool {
 
 	render() {
 		const { out, in: inc, connected } = this;
-		const playing = inc?.state === 'playing' && Boolean(inc.stream);
+		const playing = inc?.state === 'playing' && Boolean(inc.stream) && inc.seen;
 		const hasAudio = playing && inc.stream.getAudioTracks().length > 0;
 		const facing = out?.stream.getVideoTracks()[0]?.getSettings().facingMode;
 
@@ -697,7 +740,7 @@ class StreamTool {
 
 	renderMessage(inc, out) {
 		let content = null;
-		if (inc?.state === 'connecting') {
+		if (inc?.state === 'connecting' || (inc?.state === 'playing' && !inc.seen)) {
 			content = [h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', {}, `Connecting to ${inc.fromName}’s ${KIND_NOUN[inc.kind]}…`)];
 		} else if (inc?.state === 'paused') {
 			content = [h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', {}, 'Paused until the connection comes back…')];

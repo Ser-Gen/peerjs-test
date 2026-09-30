@@ -70,6 +70,7 @@ const { Room } = await import(`${ROOT}/app/room.js`);
 const { newRoomCode } = await import(`${ROOT}/app/rooms.js`);
 const { CH } = await import(`${ROOT}/app/protocol.js`);
 const { RoomDoc } = await import(`${ROOT}/app/roomdoc.js`);
+const { Emitter } = await import(`${ROOT}/app/emitter.js`);
 const { default: chat } = await import(`${ROOT}/app/tools/chat/chat.js`);
 const { Timeline } = await import(`${ROOT}/app/tools/chat/timeline.js`);
 const { deleteRoomFiles, hashFile, keptSettings, keptUsage } = await import(`${ROOT}/app/tools/chat/kept.js`);
@@ -123,9 +124,11 @@ function device(name, letter) {
 			return true;
 		},
 	};
-	const room = new Room({ code, ice: ice(), identity: { id, name } });
+	// Like app/device.js: it says when its name changes in Settings.
+	const identity = Object.assign(new Emitter(), { id, name });
+	const room = new Room({ code, ice: ice(), identity });
 	room.start();
-	const dev = { name, id, root, ctx, room };
+	const dev = { name, id, root, ctx, room, identity };
 	dev.unmount = chat.mount(root, room, ctx);
 	return dev;
 }
@@ -206,6 +209,19 @@ await until('showing the Chat marks it read', () => readOf(B, 'anybody there?') 
 say(A, 'yes, here');
 await until('and the other way round', () => readOf(A, 'yes, here') === 'Read', 3000);
 check('the label names who, on hover', A.root.querySelector('.msg.mine .read').title === 'Read by Phone');
+
+// A new name in Settings reaches every place it shows, messages sent before it included.
+const rename = (dev, name) => {
+	dev.identity.name = name;
+	dev.identity.emit('change');
+};
+const senders = dev => [...dev.root.querySelectorAll('.msg.theirs .sender')].map(el => el.textContent);
+rename(B, 'Pixel');
+await until('a rename changes the name on the messages sent before it', () => senders(A).length > 0 && senders(A).every(name => name === 'Pixel'), 3000, () => senders(A).join(','));
+check('and in who has read a message', A.root.querySelector('.msg.mine .read').title === 'Read by Pixel');
+await sleep(100);
+rename(B, 'Phone');
+await until('and renaming back brings the old name back everywhere', () => senders(A).every(name => name === 'Phone') && A.root.querySelector('.msg.mine .read').title === 'Read by Phone');
 
 // A photo sent once: to whoever is here, in memory.
 const photo = new File([new Uint8Array([137, 80, 78, 71, 1, 2, 3])], 'photo.png', { type: 'image/png' });
@@ -390,6 +406,9 @@ check('it never moves back', !r2.markRead(m1.id) && r1.readersOf(m2).length === 
 check('it moves forward', r2.markRead(m3.id) && r1.readersOf(m3).length === 1);
 check('the sender is not a reader of their own message', r1.markRead(m3.id) && r1.readersOf(m3).map(r => r.deviceId).join() === ids.b);
 check('a mark for a message that is not there is refused', !r2.markRead('f'.repeat(16)));
+r2.self.name = 'Benjamin'; // renamed in Settings, with nothing new to read
+check('a rename rewrites the mark with the new name, so devices that are never online together learn it',
+	r2.rename() && r1.nameOf(ids.b) === 'Benjamin' && r1.readersOf(m3)[0].name === 'Benjamin' && !r2.rename());
 r1.readsMap.set('nonsense', { id: m1.id });
 r1.readsMap.set(ids.c, { id: 'not an id' });
 r1.readsMap.set(ids.c.replace(/c/g, 'd'), { id: m3.id, name: 'x'.repeat(500) });

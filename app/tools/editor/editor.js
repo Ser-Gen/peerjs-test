@@ -1,4 +1,4 @@
-import { cleanName, device } from '../../device.js';
+import { cleanName } from '../../device.js';
 import { CH } from '../../protocol.js';
 import { button, h, icon, openDialog, toast } from '../../ui/dom.js';
 import { copyText, formatBytes, indexedDBUsable, randomId, sleep } from '../../util.js';
@@ -9,6 +9,7 @@ import { CodeMirrorView, loadCodeMirror } from './cm-view.js';
 import { MonacoView, loadMonaco } from './monaco-view.js';
 
 const STORAGE_WAIT = 4000; // blocked IndexedDB never answers; sync with the others anyway
+const NAMES_PEEK = 3000; // ms the others' names stay hidden after a tap on one
 const SYNC_WAIT = 5000; // a member whose editor doesn't answer doesn't hold up the empty state
 const MAX_QUEUED = 5000; // messages kept while the editor bundle loads
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -98,6 +99,15 @@ class EditorTool {
 		this.searchBtn = iconButton('search', 'Search', () => this.toggleSearch(), 'icon-btn push');
 		this.moreBtn = iconButton('more', 'Document options', () => this.showOptions());
 		this.host = h('div', { class: 'editor-host', hidden: true });
+		// Another member's name sits above their cursor and can cover a word. With a mouse, pointing at it hides it
+		// (styles); a finger has no hover, so a tap on a name hides the names for a moment.
+		this.peekTimer = null;
+		this.host.addEventListener('pointerdown', event => {
+			if (event.pointerType === 'mouse' || !event.target.closest?.('.cm-ySelectionInfo, .peerkit-yname')) return;
+			this.host.classList.add('names-peek');
+			clearTimeout(this.peekTimer);
+			this.peekTimer = setTimeout(() => this.host.classList.remove('names-peek'), NAMES_PEEK);
+		}, true);
 		this.message = h('div', { class: 'editor-message' });
 		this.keys = h('div', { class: 'editor-keys', role: 'toolbar', 'aria-label': 'Editing keys' },
 			keyButton('undo', 'Undo', () => this.undoManager()?.undo()),
@@ -126,7 +136,10 @@ class EditorTool {
 			// Load when another member starts syncing too, so its edits are kept here even if this tab stays closed.
 			room.on(`msg:${CH.DOC}`, (msg, member) => this.onEarlyMessage(msg, member)),
 			ctx.onShow(() => this.load()),
-			room.on('members', () => this.render()),
+			room.on('members', () => {
+				this.renameSelf();
+				this.render();
+			}),
 			editorPrefs.on('change', patch => {
 				if ('engine' in patch) this.switchEngine();
 			}),
@@ -140,6 +153,7 @@ class EditorTool {
 	destroy() {
 		this.destroyed = true;
 		clearTimeout(this.syncTimer);
+		clearTimeout(this.peekTimer);
 		this.unsubscribe.forEach(fn => fn());
 		this.darkQuery.removeEventListener('change', this.onScheme);
 		this.sheet?.dialog.close();
@@ -223,8 +237,14 @@ class EditorTool {
 	}
 
 	user() {
-		const { color } = this.room.self;
-		return { name: device.name, color, colorLight: `${color}33` };
+		const { color, name } = this.room.self;
+		return { name, color, colorLight: `${color}33` };
+	}
+
+	/** After a rename in Settings: the others see the new name on this device's cursor. */
+	renameSelf() {
+		const user = this.awareness?.getLocalState()?.user;
+		if (user && user.name !== this.room.self.name) this.awareness.setLocalStateField('user', this.user());
 	}
 
 	// --- documents ---

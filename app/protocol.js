@@ -1,15 +1,16 @@
 // Bump when messages change incompatibly; members with different versions refuse to link.
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 // Message channels on the control connection. Every message is `{ ch, type, ...payload }`.
 export const CH = {
 	SYS: 'sys', // links, room membership, ping / pong
 	TRANSFER: 'transfer', // file offers and requests for kept files (app/tools/chat/transfers.js)
-	STREAM: 'stream', // camera / screen start, stop, close (media itself goes over a peerjs call)
+	STREAM: 'stream', // camera / screen start, stop, close (media itself goes over a media call)
 	VOICE: 'voice', // who is in the room's voice conversation (app/voice.js)
 	DOC: 'doc', // shared editor: Yjs sync and awareness (app/docsync.js)
 	ROOM: 'room', // the room document: the chat and its file list, Yjs sync like DOC (app/roomdoc.js)
 	BOARD: 'board', // the whiteboard's boards, Yjs sync and awareness like DOC (app/tools/whiteboard/)
+	RTC: 'rtc', // media calls: offer, answer, ICE candidates and close, over the link (app/mediacall.js)
 };
 
 /*
@@ -41,6 +42,10 @@ export const CH = {
  *
  * Voice (ch: 'voice'):
  *   state {on, muted, mic}   the sender's voice state; sent on every link up and whenever it changes
+ *
+ * Version 7 negotiates media calls over the link (ch: 'rtc', app/mediacall.js) instead of through the
+ * signaling server: a version-6 device would call through the server, where a version-7 device no longer
+ * answers, and would not answer an offer on the link.
  *
  * Version 6 moved the chat into the room document (ch: 'room'): a version-5 device sends text as
  * `transfer` messages that a version-6 device no longer reads, so the two refuse to link.

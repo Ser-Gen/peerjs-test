@@ -186,6 +186,22 @@ export class Timeline extends Emitter {
 		return true;
 	}
 
+	/**
+	 * This device's name as the others last saw it in the document. The read mark carries it, so after a rename
+	 * the mark is written again with the new name: devices that are not online together still learn it.
+	 */
+	rename() {
+		const mine = this.readsMap.get(this.self.deviceId);
+		if (!ID_RE.test(mine?.id) || cleanName(mine.name) === this.self.name) return false;
+		this.readsMap.set(this.self.deviceId, { ...mine, name: this.self.name });
+		return true;
+	}
+
+	/** The newest name the document knows for a device (from its read mark), or null. */
+	nameOf(deviceId) {
+		return this.reads().find(read => read.deviceId === deviceId)?.name ?? null;
+	}
+
 	/** Mark a file removed. Every device deletes its copy, so nobody is listed as keeping it any more. */
 	remove(fileId) {
 		this.roomDoc.doc.transact(() => {

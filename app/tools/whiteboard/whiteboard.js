@@ -210,7 +210,10 @@ class WhiteboardTool {
 				this.render();
 			}),
 			ctx.onShow(() => this.onShow()),
-			room.on('members', () => this.render()),
+			room.on('members', () => {
+				this.renameSelf();
+				this.render();
+			}),
 		];
 		this.setTool(this.prefs.tool, false);
 		if (ctx.visible()) this.load();
@@ -242,6 +245,13 @@ class WhiteboardTool {
 	}
 
 	/** The board document is here (because this tab was opened, or because a member started syncing it). */
+	/** After a rename in Settings: the others see the new name on this device's pointer. */
+	renameSelf() {
+		const awareness = this.boards ? this.data.awareness : null;
+		const user = awareness?.getLocalState()?.user;
+		if (user && user.name !== this.room.self.name) awareness.setLocalStateField('user', { ...user, name: this.room.self.name });
+	}
+
 	ready() {
 		if (this.boards || this.destroyed) return;
 		const { lib, doc, awareness } = this.data;

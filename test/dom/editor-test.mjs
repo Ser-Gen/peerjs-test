@@ -222,11 +222,31 @@ sB.setUp(true);
 await until('offline edits merge after reconnect', () => textIn(rootA) === textIn(rootB) && textIn(rootA).startsWith('# from A offline\n') && textIn(rootA).endsWith('# from B offline\n'));
 await until('presence comes back after reconnect', () => !rootA.querySelector('.presence').hidden && !rootB.querySelector('.presence').hidden);
 
+// B is renamed in Settings: the room says so with 'members', and A sees the new name on B's presence.
+sB.self.name = 'Beta';
+sB.emit('members');
+// A name above another member's cursor can cover a word. A tap on it hides the names for a moment (a mouse hovers instead).
+const tapOn = (el, pointerType) => {
+	const event = new window.Event('pointerdown', { bubbles: true, cancelable: true });
+	Object.defineProperty(event, 'pointerType', { value: pointerType });
+	el.dispatchEvent(event);
+};
+await until('B’s name is shown above its cursor on A', () => rootA.querySelector('.cm-ySelectionInfo'));
+const hostA = rootA.querySelector('.editor-host');
+tapOn(rootA.querySelector('.cm-ySelectionInfo'), 'mouse');
+check('a mouse press on a name leaves it to the hover style', !hostA.classList.contains('names-peek'));
+tapOn(rootA.querySelector('.cm-ySelectionInfo'), 'touch');
+check('a tap on a name hides the names, so the word under it can be read', hostA.classList.contains('names-peek'));
+await until('and they come back after a moment', () => !hostA.classList.contains('names-peek'), 5000);
+
+await until('a rename reaches the other device’s presence', () => rootA.querySelector('.presence .presence-chip')?.textContent === 'Beta',
+	3000, () => rootA.querySelector('.presence .presence-chip')?.textContent);
+
 // Delete on B while A has it open.
 byLabel(rootB, 'Document options').click();
 buttonByText(lastDialog(), 'Delete').click();
 await until('delete on B moves B to the remaining document', () => docName(rootB) === 'Shopping');
-await until('A is told and moves on too', () => document.getElementById('toasts').textContent.includes('B deleted “tool.py”') && docName(rootA) === 'Shopping');
+await until('A is told and moves on too', () => document.getElementById('toasts').textContent.includes('Beta deleted “tool.py”') && docName(rootA) === 'Shopping');
 
 // Reload A without a link: the documents come from IndexedDB.
 await sleep(100);
