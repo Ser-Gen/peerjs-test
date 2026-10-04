@@ -11,7 +11,7 @@ Third-party code, committed as ready-to-load files so the app itself has no buil
 | `monaco.js`, `monaco.css`, `monaco.worker.js` | Monaco, the editor of VS Code, for the Editor when it is chosen in Settings (ES module; its stylesheet; its editor worker, a classic script). No Yjs in it | `monaco-editor` 0.56.0, pinned in `editor-src/package.json` | MIT; listed the same way (its `marked` and `dompurify` are inside the package) |
 | `dockview.js`, `dockview.css` | dockview-core, the desktop layout's panels (ES module; its stylesheet) | 8.2.0 | MIT (`dockview.LICENCE.md`) |
 | `pdf.js`, `pdf.worker.js` | pdf.js (`pdfjs-dist`), the chat's PDF viewer where the browser has none (Android Chrome); its legacy build | 6.3.289 | Apache-2.0 (`pdf.LICENSE`) |
-| `fceux/fceux.js`, `fceux/fceux.wasm` | FCEUX, the NES emulator, compiled with Emscripten: the NES tool's games (`app/tools/nes/`) | FCEUX 2.2.3, from [hauxir/fceux](https://github.com/hauxir/fceux) at `7cc37cc` | GPL-2.0 (`fceux/LICENSE`) |
+| `fceux/fceux.js`, `fceux/fceux.wasm` | FCEUX, the NES emulator, compiled with Emscripten: the NES game in the Games tool (`app/games/nes/`) | FCEUX 2.2.3, from [hauxir/fceux](https://github.com/hauxir/fceux) at `7cc37cc` | GPL-2.0 (`fceux/LICENSE`) |
 | `words.js` | BIP-39 English word list (2048 words) for room codes, as an ES module | from `@scure/bip39` 2.3.0 | MIT (header in the file) |
 
 ## words.js
@@ -116,9 +116,9 @@ Run `node test/run.mjs vendor` (it opens a PDF with it), then open a PDF from th
 FCEUX 2.2.3 compiled to JavaScript and WebAssembly with Emscripten, from [hauxir/fceux](https://github.com/hauxir/fceux), a 2019 fork (by one of the authors of Kosmi's NES Party) of [ryanwmoore/fceux](https://github.com/ryanwmoore/fceux), which ported FCEUX to Emscripten in 2015. The fork's last commit, `7cc37cc` ("export function to enable four score"), is the source; its Dockerfile is the build.
 
 - The files are the ones Kosmi's NES Party serves (`9d6e5d31…605.js` and `08762ee4…83f.wasm`), renamed and otherwise unchanged. What the fork adds is all in them: `setGamePadValue(pad, button, on)` (`a4955d6`), `saveState` / `loadState` through `/DUMP.frz` (`bdc569d`), `enableFourScore` (`7cc37cc`), and `js_substitutions.sh` (`04ddd5c`), which edits the built script so the wasm file's name is `window.neswasm` and the sound goes to `window.SDL.destination`.
-- The script loads nothing but its wasm (`app/tools/nes/emulator.js` hands it the bytes as `Module.wasmBinary`) and runs no fetched code. Emscripten's socket emulation is in it for FCEUX's network play, which nothing turns on.
+- The script loads nothing but its wasm (`app/games/nes/emulator.js` hands it the bytes as `Module.wasmBinary`) and runs no fetched code. Emscripten's socket emulation is in it for FCEUX's network play, which nothing turns on.
 - `LICENSE` is the GPL-2.0 text (FCEUX's licence); the source of these exact files is the fork above.
-- `app/tools/nes/emulator.js` loads it into a same-origin iframe (`app/tools/nes/frame.html`), because it lives in globals (`Module`, `FS`, `SDL`) and can only be unloaded with its page. The service worker caches it on first use, so a phone that only plays never downloads it. `node test/run.mjs nes` runs it in Node with a small ROM made in the test.
+- `app/games/nes/emulator.js` loads it into a same-origin iframe (`app/games/nes/frame.html`), because it lives in globals (`Module`, `FS`, `SDL`) and can only be unloaded with its page. The service worker caches it on first use, so a phone that only plays never downloads it. `node test/run.mjs nes` runs it in Node with a small ROM made in the test.
 
 ### Upgrading
 

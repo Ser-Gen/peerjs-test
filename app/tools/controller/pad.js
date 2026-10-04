@@ -16,7 +16,7 @@ export const localGamepads = () => [...(navigator.getGamepads?.() ?? [])].filter
 
 /*
  * The full-screen pad: this device as a controller for one host, until stop(). Used by the Controller tool, and by
- * the NES tool's guests (with the game's picture behind the buttons in Remote play).
+ * the Games tool's guests (in the layout the game asks for; with the game's picture behind the buttons in Remote play).
  *
  * NES pad: a D-pad, Select, Start, B and A (Standard Gamepad 12–15, 8, 9, 0 and 1: NES B is the bottom button,
  * A the right one). Motion: one big trigger (7) and the phone's orientation. Both full screen, landscape, with the

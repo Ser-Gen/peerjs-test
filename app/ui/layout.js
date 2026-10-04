@@ -24,13 +24,24 @@ export function loadDock() {
 	return loading;
 }
 
+// Tools whose id changed since a layout may have been saved: old id → new (the NES tool became Games in 0.17).
+const RENAMED = { nes: 'games' };
+
+/** A saved layout with the old ids of renamed tools replaced (they appear as quoted strings, and a tab's text is the tool's own). */
+function renamed(layout) {
+	if (!layout || typeof layout !== 'object') return layout;
+	let json = JSON.stringify(layout);
+	for (const [from, to] of Object.entries(RENAMED)) json = json.replaceAll(`"${from}"`, `"${to}"`);
+	return JSON.parse(json);
+}
+
 /**
  * The saved layout and the tools it doesn't have yet (added to the app since it was saved), or null when there is
  * none or it holds a tool this version doesn't have: then the default is used.
  */
 function savedLayout(ids) {
 	const saved = readJSON(LAYOUT_KEY);
-	const layout = saved?.version === LAYOUT_VERSION ? saved.layout : null;
+	const layout = saved?.version === LAYOUT_VERSION ? renamed(saved.layout) : null;
 	if (!layout || typeof layout !== 'object' || !layout.panels || typeof layout.panels !== 'object') return null;
 	if (Array.isArray(layout.popoutGroups) && layout.popoutGroups.length) return null; // never made here
 	// A tool's own panels (a stream, "stream:<id>") are left out: what they showed is gone after a reload.

@@ -287,6 +287,7 @@ export class InputHub extends Emitter {
 				seq: -1,
 				pressSeq: new Array(BUTTONS).fill(-1),
 				at: 0,
+				t: null,
 				rtt: null,
 				echoAt: 0,
 				packets: [], // arrival times in the last second
@@ -326,6 +327,7 @@ export class InputHub extends Emitter {
 			pad.axes = state.axes;
 			pad.quat = state.quat;
 			pad.at = now;
+			pad.t = state.t;
 			if (state.rtt != null) pad.rtt = state.rtt;
 		}
 		for (const i of presses) this.emit('press', slot, i);

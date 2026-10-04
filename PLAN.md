@@ -939,6 +939,34 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - The NES tool from Slice 15 moves behind this interface.
 - **Swing test** (Wii-tennis-like): swing speed and direction from the quaternion's angular velocity, shown as a meter per player. This is used to tune the gyro pipeline.
 
+**As built** (2026-10-04, app 0.17.0, `PROTOCOL_VERSION` 8)
+- **The Games tool** (`app/tools/games/`, the tab that was NES): **Games in this room** lists each member's game with its players, and **Play here** lists the games this device can run, each with its player count ("NES · 1–4 players", "Swing test · 1–4 players") and its own part (the NES: Open a ROM… and Continue; the Swing test: Start). A saved desktop layout keeps its arrangement, with Games where the NES was.
+- **What the tool does for every game**: the toolbar (Pause, Full screen, Stop), the Players (seats, swapping, a free seat taken from a phone, a seat kept by device), pausing while a seated player is away, the screen kept on, the chips every member sees, the Monitor's numbers, Remote play when the game has a picture, and the guest's pad.
+- **A game module** is `app/games/<id>/game.js`: `{id, title, about, layout, players: {min, max}, thisDevice, supported(), lobby({start}), mount(session, options)}`. `mount` returns the running game (its title, its picture or board, its own toolbar buttons and panels, `start()`, `setPaused()`, `stream()`, `destroy()`), and the **session** it gets has the seats, each member's pad (buttons, axes, orientation and the sender's clock), Pause, Stop and the events `press`, `state`, `status` and `seats`.
+- **Phones get the game's layout**: `game` says which pad (`nes` or `motion`), and Join opens that one; there is no layout to choose. Stop sends every phone back from its pad to the lobby, saying who stopped it.
+- **The NES** is a module now (`app/games/nes/`): the emulator, keys, the touch pad, saves and Remote play moved out of the tool unchanged.
+- **Swing test** (`app/games/swing/`): the phones are Motion pads (Recenter, then swing); the laptop shows a card per player in their colour. A card has:
+  - a meter of the phone's turning speed now, with a mark at the last swing's peak;
+  - the last swing as "Hard · 1240°/s · ← left": Soft under 400°/s, Medium, Hard from 800; left, right, up, down or twist, by the axis it turned about most since Recenter;
+  - the best swing and the count;
+  - a flash when a swing ends.
+
+  The speed is the turn between two orientations over the time between them on the phone's clock, so network jitter doesn't change it. A swing starts above 180°/s and ends under 90°/s, or when the phone stops sending for 250 ms. It counts only if it turned 20° in all, so a jolt isn't one. The trigger clears that player's numbers, and swings while paused don't count.
+- Messages: the channel is `games` now (it was `nes`): `game {game, title, layout, paused, remote, players}`, `seat {seat}` and `watch {on}`; the picture's media call has metadata `{kind: 'game'}`. The pads are still the Controller's `input`, whose hub now keeps each pad's `t` (the sender's clock). No new protocol number: a 0.16 device ignores `games` (and 0.17 ignores `nes`), so they don't see each other's games.
+- Differences from the plan:
+  - The modules are under `app/games/<id>/` rather than `games/<id>/`, since all the app's code is under `app/`.
+  - `mount(session, options)` returns the running game instead of `mount(el, input)` with `unmount()`: a game needs its toolbar, panels and pause as well as an element, and the NES has to be in the page before it starts (an iframe has no window until then).
+  - The Games tab is the NES tool renamed, not a seventh tab next to it.
+  - Phones switch to the declared layout when they join a game, not by themselves when it starts: full screen and the orientation lock need a tap on the phone.
+- Tests: `node test/run.mjs games` (54 checks) is new. It covers:
+  - the swing measurement (speed, the short way round, strength, direction, jolts and slow turns, a swing ended by silence);
+  - the lobby and its player counts, and seats without this device;
+  - a phone's Motion pad from `deviceorientation`: a hard swing to the left and a soft one to the right on its card, clearly apart, the hard one shown within 0.45 s of the phone stopping;
+  - a second player from a headless member's messages, forged orientations;
+  - the trigger, Pause, a player away and back, and Stop.
+
+  `node test/run.mjs nes` (128) runs the NES through the Games tool, and `desktop` (46) checks the layout saved with the NES tool. Mutation-checked: left and right swapped, the long way round, a jolt counted, swings counted while paused, the trigger doing nothing, no swing timer, the pad states not reaching the game, the guest ignoring the layout, a seat for the laptop in the Swing test, the old layout not renamed, Reset not restreaming, Pause not reaching the NES. Checked in Node, not in a browser.
+
 **Checklist**
 - [ ] Games tab lists "Swing test" and "NES"; starting one switches phones to the correct layout.
 - [ ] Swing test: a hard swing and a soft swing give clearly different readings; left/right direction is correct.

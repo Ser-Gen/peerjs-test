@@ -2781,7 +2781,7 @@ textarea.input {
 .mon-cube .top { transform: rotateX(90deg) translateZ(3rem); }
 .mon-cube .bottom { transform: rotateX(-90deg) translateZ(3rem); }
 
-/* Remote play (the NES tool's guests): the game's picture fills the pad, the buttons float over it. */
+/* Remote play (a game's guests in the Games tool): the game's picture fills the pad, the buttons float over it. */
 .pad-play.over-picture {
 	background: #000;
 }
@@ -2825,38 +2825,38 @@ textarea.input {
 	opacity: 0.9;
 }
 
-/* --- NES (app/tools/nes/) --- */
+/* --- Games (app/tools/games/), and the NES and Swing test in it (app/games/) --- */
 
-.tool.nes {
+.tool.games {
 	overflow-y: auto;
 }
 
-.nes-body {
+.games-body {
 	width: 100%;
 	max-width: 64rem;
 	margin: 0 auto;
 	padding: 1rem;
 }
 
-.nes-lobby,
-.nes-stage,
-.nes-section {
+.games-lobby,
+.games-stage,
+.games-section {
 	display: flex;
 	flex-direction: column;
 	gap: 0.75rem;
 }
 
-.nes-lobby {
+.games-lobby {
 	gap: 1.5rem;
 }
 
-.nes-lobby[hidden],
-.nes-stage[hidden],
-.nes-section[hidden] {
+.games-lobby[hidden],
+.games-stage[hidden],
+.games-section[hidden] {
 	display: none;
 }
 
-.nes-section h3 {
+.games-section h3 {
 	margin: 0;
 	color: var(--muted);
 	font-size: 0.8rem;
@@ -2865,17 +2865,17 @@ textarea.input {
 	text-transform: uppercase;
 }
 
-.nes-section .hint,
-.nes-game .hint,
+.games-section .hint,
+.games-game .hint,
 .nes-rom .hint {
 	margin: 0;
 }
 
-.nes-section > .btn {
+.games-section > .btn {
 	align-self: flex-start;
 }
 
-.nes-games,
+.games-list,
 .nes-recent,
 .nes-saves {
 	display: flex;
@@ -2883,7 +2883,7 @@ textarea.input {
 	gap: 0.5rem;
 }
 
-.nes-game,
+.games-game,
 .nes-rom,
 .nes-save {
 	display: flex;
@@ -2896,22 +2896,22 @@ textarea.input {
 	background: var(--surface);
 }
 
-.nes-game {
+.games-game {
 	border-left: 4px solid var(--member, var(--border));
 }
 
-.nes-game > .dot {
+.games-game > .dot {
 	display: none;
 }
 
-.nes-players {
+.games-players {
 	flex-basis: 100%;
 	display: flex;
 	flex-wrap: wrap;
 	gap: 0.35rem;
 }
 
-.nes-player {
+.games-player {
 	display: inline-flex;
 	align-items: center;
 	gap: 0.35rem;
@@ -2923,26 +2923,26 @@ textarea.input {
 	overflow-wrap: anywhere;
 }
 
-.nes-player .dot {
+.games-player .dot {
 	background: var(--member, transparent);
 	box-shadow: inset 0 0 0 1px var(--muted);
 }
 
-.nes-player.free {
+.games-player.free {
 	color: var(--muted);
 	border-style: dashed;
 }
 
-.nes-player.away {
+.games-player.away {
 	border-color: var(--warn);
 }
 
-.nes-player.mine {
+.games-player.mine {
 	font-weight: 600;
 	border-color: var(--member);
 }
 
-.nes-game-text {
+.games-text {
 	flex: 1;
 	min-width: 10rem;
 	display: flex;
@@ -2958,39 +2958,44 @@ textarea.input {
 	flex: 1;
 }
 
-.nes-toolbar,
-.nes-row {
+.games-toolbar,
+.games-row {
 	display: flex;
 	align-items: center;
 	flex-wrap: wrap;
 	gap: 0.5rem;
 }
 
-.nes-title {
+.games-title {
 	flex: 1 1 100%;
 	overflow-wrap: anywhere;
 }
 
 @media (min-width: 640px) {
-	.nes-title {
+	.games-title {
 		flex: 1;
 	}
 }
 
-/* 256 × 224, square pixels, as large as fits. */
-.nes-screen-wrap {
+/* The game's picture (or board): as large as fits. */
+.games-screen-wrap {
 	position: relative;
 	width: 100%;
-	max-height: 75vh;
-	aspect-ratio: 256 / 224;
 	margin: 0 auto;
-	background: #000;
 	border-radius: 8px;
 	overflow: hidden;
 }
 
-.nes-screen-wrap:fullscreen {
+/* The NES: 256 × 224, square pixels. */
+.nes-screen-wrap {
+	max-height: 75vh;
+	aspect-ratio: 256 / 224;
+	background: #000;
+}
+
+.games-screen-wrap:fullscreen {
 	max-height: none;
+	overflow: auto;
 	border-radius: 0;
 }
 
@@ -3006,7 +3011,7 @@ textarea.input {
 	pointer-events: none; /* keys stay with this page, never the emulator's */
 }
 
-.nes-notice {
+.games-notice {
 	position: absolute;
 	inset: 0;
 	display: flex;
@@ -3022,43 +3027,43 @@ textarea.input {
 	cursor: pointer;
 }
 
-.nes-notice[hidden] {
+.games-notice[hidden] {
 	display: none;
 }
 
-.nes-panels {
+.games-panels {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
 	gap: 1.5rem;
 }
 
-.nes-seat {
+.games-seat {
 	display: flex;
 	align-items: center;
 	gap: 0.75rem;
 }
 
-.nes-seat > span:not(.dot) {
+.games-seat > span:not(.dot) {
 	min-width: 5rem;
 	font-weight: 600;
 }
 
-.nes-seat > .dot {
+.games-seat > .dot {
 	background: var(--member);
 }
 
-.nes-seat.empty > .dot {
+.games-seat.empty > .dot {
 	box-shadow: inset 0 0 0 1px var(--muted);
 }
 
-.nes-seat select {
+.games-seat select {
 	flex: 1;
 	min-width: 0;
 	min-height: 40px;
 	font-size: 16px;
 }
 
-.nes-seat.away select {
+.games-seat.away select {
 	border-color: var(--warn);
 }
 
@@ -3081,7 +3086,7 @@ textarea.input {
 	background: transparent;
 }
 
-.nes-screen-wrap.pad-on {
+.games-screen-wrap.pad-on {
 	position: fixed;
 	inset: 0;
 	z-index: 60;
@@ -3091,7 +3096,48 @@ textarea.input {
 	border-radius: 0;
 }
 
-.nes-toolbar .btn[hidden] {
+.games-tools {
+	display: contents;
+}
+
+.games-heading {
+	margin: 0;
+	font-size: 1.1rem;
+}
+
+.games-sub {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.5rem;
+}
+
+.games-sub[hidden] {
+	display: none;
+}
+
+.games-sub h4 {
+	margin: 0.5rem 0 0;
+	color: var(--muted);
+	font-size: 0.8rem;
+	font-weight: 600;
+}
+
+.games-sub > .nes-recent {
+	align-self: stretch;
+}
+
+.games-module > .btn {
+	align-self: flex-start;
+}
+
+.games-seats {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+}
+
+.games-toolbar .btn[hidden] {
 	display: none;
 }
 
@@ -3111,7 +3157,7 @@ textarea.input {
 	box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
 }
 
-.pad-seats .nes-player {
+.pad-seats .games-player {
 	min-height: 44px;
 	justify-content: flex-start;
 	border-radius: 10px;
@@ -3122,7 +3168,7 @@ textarea.input {
 	font-size: 0.875rem;
 }
 
-.pad-seats .nes-player .hint {
+.pad-seats .games-player .hint {
 	margin-left: auto;
 	color: #98a2b3;
 	overflow: hidden;
@@ -3130,15 +3176,142 @@ textarea.input {
 	white-space: nowrap;
 }
 
-.pad-seats .nes-player.free {
+.pad-seats .games-player.free {
 	border-color: #98a2b3;
 }
 
-.pad-seats .nes-player:disabled {
+.pad-seats .games-player:disabled {
 	opacity: 0.75;
 }
 
-.pad-seats .nes-player.mine {
+.pad-seats .games-player.mine {
 	border-color: var(--member);
 	opacity: 1;
+}
+
+/* Swing test: a card per player with the speed meter */
+.swing-board {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+	gap: 0.75rem;
+	padding: 0.25rem 0;
+}
+
+.games-screen-wrap.swing-wrap:fullscreen {
+	padding: 1rem;
+	background: var(--bg);
+}
+
+.swing-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+	padding: 0.75rem 0.9rem;
+	border: 1px solid var(--border);
+	border-left: 4px solid var(--member, var(--border));
+	border-radius: 12px;
+	background: var(--surface);
+}
+
+.swing-card.empty {
+	border-style: dashed;
+	border-left-width: 1px;
+	color: var(--muted);
+}
+
+.swing-card.away {
+	border-color: var(--warn);
+}
+
+.swing-head {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	min-width: 0;
+}
+
+.swing-head .dot {
+	background: var(--member, transparent);
+	box-shadow: inset 0 0 0 1px var(--muted);
+}
+
+.swing-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.swing-meter {
+	position: relative;
+	height: 14px;
+	border-radius: 7px;
+	background: var(--border);
+	overflow: hidden;
+}
+
+.swing-fill {
+	height: 100%;
+	width: 0;
+	background: var(--member, var(--accent));
+	transition: width 80ms linear;
+}
+
+.swing-peak {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 3px;
+	margin-left: -1px;
+	background: var(--text);
+}
+
+.swing-peak[hidden] {
+	display: none;
+}
+
+.swing-row {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0.5rem;
+}
+
+.swing-last {
+	margin: 0;
+	font-size: 1.05rem;
+	font-weight: 600;
+}
+
+.swing-speed {
+	color: var(--muted);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.swing-best {
+	margin: 0;
+}
+
+.swing-card.hit {
+	animation: swing-hit 600ms ease-out;
+}
+
+@keyframes swing-hit {
+	from {
+		box-shadow: 0 0 0 4px var(--member, var(--accent));
+	}
+
+	to {
+		box-shadow: 0 0 0 0 transparent;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.swing-card.hit {
+		animation: none;
+	}
+
+	.swing-fill {
+		transition: none;
+	}
 }

@@ -14,13 +14,13 @@ import { claimTab, copyText } from './util.js';
 import { boardDocName, roomDocName } from './roomdoc.js';
 import chat from './tools/chat/chat.js';
 import controller from './tools/controller/controller.js';
-import nes from './tools/nes/nes.js';
+import games from './tools/games/games.js';
 import { deleteRoomFiles } from './tools/chat/kept.js';
 import editor from './tools/editor/editor.js';
 import stream from './tools/stream.js';
 import whiteboard from './tools/whiteboard/whiteboard.js';
 
-const TOOLS = [chat, stream, editor, whiteboard, controller, nes].filter(tool => tool.supported());
+const TOOLS = [chat, stream, editor, whiteboard, controller, games].filter(tool => tool.supported());
 
 const INVITE_KEY = 'peerkit.invite'; // sessionStorage: the new room whose invite sheet opens once it is ready
 const SERVER_ERRORS = new Set(['network', 'server-error', 'socket-error', 'socket-closed', 'disconnected', 'invalid-key', 'ssl-unavailable']);

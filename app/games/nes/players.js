@@ -1,14 +1,8 @@
-import { Emitter } from '../../emitter.js';
-import { NES_BUTTONS, PADS } from './emulator.js';
+import { NES_BUTTONS } from './emulator.js';
 
 /*
- * Who plays which NES pad, and how each kind of input becomes NES buttons (bits in NES_BUTTONS' order:
- * A, B, Select, Start, Up, Down, Left, Right).
- *
- * Sources:
- *   'host'     this device: its keyboard and its first gamepad
- *   'gp:<n>'   another gamepad plugged into this device (index n ≥ 1)
- *   'pad:<n>'  a member's pad, by its InputHub slot (kept by device, so a reload comes back to the same seat)
+ * How each kind of input becomes NES buttons (bits in NES_BUTTONS' order: A, B, Select, Start, Up, Down, Left,
+ * Right), and the keys. Who sits on which pad is the Games tool's (app/tools/games/seats.js).
  */
 
 const bit = i => 1 << i;
@@ -63,49 +57,4 @@ export function keyLabel(code) {
 	if (/^Key[A-Z]$/.test(code)) return code.slice(3);
 	if (/^Digit\d$/.test(code)) return code.slice(5);
 	return code.replace(/(Left|Right)$/, ' ($1)').replace(/^Numpad/, 'Num ');
-}
-
-export const isSource = s => s === 'host' || /^(gp|pad):\d{1,2}$/.test(s);
-
-/**
- * Four seats. A source seen for the first time takes the first free seat (this device's keyboard is Player 1);
- * one moved off its seat by hand stays off when it comes back. 'change' when a seat changes.
- */
-export class Seats extends Emitter {
-	constructor() {
-		super();
-		this.seats = new Array(PADS).fill(null);
-		this.known = new Set();
-		this.arrive('host');
-	}
-
-	seatOf(source) {
-		return this.seats.indexOf(source);
-	}
-
-	/** A source is here: seated if it's new and a seat is free. Returns its seat, or −1. */
-	arrive(source) {
-		if (this.known.has(source)) return this.seatOf(source);
-		this.known.add(source);
-		const free = this.seats.indexOf(null);
-		if (free === -1) return -1;
-		this.seats[free] = source;
-		this.emit('change');
-		return free;
-	}
-
-	/** Put a source (or nobody) on a seat; a source on another seat swaps with whoever was here. */
-	assign(seat, source) {
-		if (seat < 0 || seat >= PADS) return;
-		if (source !== null && !isSource(source)) return;
-		const was = this.seats[seat];
-		if (was === source) return;
-		if (source !== null) {
-			this.known.add(source);
-			const from = this.seatOf(source);
-			if (from !== -1) this.seats[from] = was;
-		}
-		this.seats[seat] = source;
-		this.emit('change');
-	}
 }
