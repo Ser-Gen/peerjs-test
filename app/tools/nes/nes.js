@@ -1,6 +1,7 @@
 import { sha256, toHex } from '../../crypto.js';
 import { musicSdp } from '../../mediacall.js';
 import { CH } from '../../protocol.js';
+import { memberColor } from '../../room.js';
 import { button, h, icon, openDialog, toast } from '../../ui/dom.js';
 import { indexedDBUsable, readJSON, timeAgo, wakeLock, writeJSON } from '../../util.js';
 import { download } from '../chat/viewer.js';
@@ -13,6 +14,7 @@ import { NES, Seats, gamepadBits, keyLabel, nesBits, readKeys } from './players.
 const PREFS_KEY = 'peerkit.nes';
 const PREFS_VERSION = 1;
 const MAX_TITLE = 80;
+const MAX_NAME = 40;
 const TAP_FRAMES = 2; // a press shorter than a frame is held this many frames, so the game sees it
 
 /*
@@ -24,9 +26,14 @@ const TAP_FRAMES = 2; // a press shorter than a frame is held this many frames, 
  * picture and sound streamed to it behind the pad (Remote play).
  *
  * Protocol (ch: 'nes'); the pads themselves are ch 'input' (app/tools/controller/input.js):
- *   game  {title, paused, remote}   host → members: a game runs (on start, on every change, on link up);
- *                                   title null: it stopped. `remote`: the picture can be streamed.
+ *   game  {title, paused, remote, players}
+ *                                   host → members: a game runs (on start, on every change, on link up);
+ *                                   title null: it stopped. `remote`: the picture can be streamed. `players`: the
+ *                                   four seats, each null or {device, pad, name, away}: whose device (its ID, so a
+ *                                   reload keeps it), which of its pads (0 its screen or keys, n its gamepad n),
+ *                                   the name the host knows and whether that pad is gone for now.
  *   watch {on}                      guest → host: send me the picture (a media call, metadata {kind: 'nes'}) or stop
+ *   seat  {seat}                    guest → host: put my screen pad on this seat (0–3) if it's free
  * A seated member's pad that goes away pauses the game, and it goes on when the pad comes back.
  */
 
@@ -40,13 +47,25 @@ export default {
 	},
 };
 
-/** A `game` message: {title, paused, remote}, null for a stopped game, undefined for one that isn't valid. */
+/** A `game` message: {title, paused, remote, players}, null for a stopped game, undefined for one that isn't valid. */
 export function readGame(msg) {
 	if (msg?.title === null) return null;
 	if (typeof msg?.title !== 'string') return undefined;
 	const title = msg.title.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, MAX_TITLE);
 	if (!title) return undefined;
-	return { title, paused: msg.paused === true, remote: msg.remote === true };
+	return { title, paused: msg.paused === true, remote: msg.remote === true, players: readPlayers(msg.players) };
+}
+
+/** The four seats of a `game` message; a seat that isn't valid is empty. */
+export function readPlayers(raw) {
+	return Array.from({ length: PADS }, (_, i) => {
+		const p = Array.isArray(raw) ? raw[i] : null;
+		if (!p || typeof p !== 'object') return null;
+		if (typeof p.device !== 'string' || !/^[0-9a-f]{8,64}$/.test(p.device)) return null;
+		if (!Number.isInteger(p.pad) || p.pad < 0 || p.pad > 4) return null;
+		const name = typeof p.name === 'string' ? p.name.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, MAX_NAME) : '';
+		return { device: p.device, pad: p.pad, name: name || 'A player', away: p.away === true };
+	});
 }
 
 const titleOf = fileName => fileName.replace(/\.(nes|unf|unif)$/i, '').replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, MAX_TITLE) || 'Game';
@@ -92,8 +111,7 @@ class NesTool {
 			}),
 			room.on('members', () => {
 				this.renderGames();
-				const host = this.guest && room.member(this.guest.host);
-				if (host) this.guest.play.setHostName(this.guestLabel(host));
+				this.renderGuest();
 			}),
 			room.on('call', (call, member) => this.onCall(call, member)),
 			this.hub.on('pads', () => this.onPads()),
@@ -158,10 +176,29 @@ class NesTool {
 					h('strong', {}, game.title),
 					h('span', { class: 'hint' }, `${member.name}${game.paused ? ' · paused' : ''}`)),
 				button('Controller', 'gamepad', () => this.join(member, 'pad'), 'btn small'),
-				game.remote ? button('Remote play', 'monitor', () => this.join(member, 'remote'), 'btn small') : null);
+				game.remote ? button('Remote play', 'monitor', () => this.join(member, 'remote'), 'btn small') : null,
+				h('div', { class: 'nes-players' }, ...game.players.map((player, i) => this.playerChip(player, i))));
 		});
 		this.gameList.replaceChildren(...rows);
 		this.gamesSection.hidden = rows.length === 0;
+	}
+
+	/** Who a seat's player is, as this device knows them: the member's name now, else the name the host sent. */
+	playerInfo(player) {
+		if (!player) return null;
+		const self = this.room.self;
+		const member = player.device === self.deviceId ? self : this.room.members.find(m => m.deviceId === player.device);
+		const name = `${member?.name ?? player.name}${player.pad ? ` (gamepad ${player.pad})` : ''}`;
+		return { name, color: memberColor(player.device), mine: player.device === self.deviceId && player.pad === 0 };
+	}
+
+	playerChip(player, seat) {
+		const info = this.playerInfo(player);
+		return h('span', {
+			class: `nes-player${info ? '' : ' free'}${player?.away ? ' away' : ''}${info?.mine ? ' mine' : ''}`,
+			style: info ? `--member: ${info.color}` : '',
+			'data-seat': seat,
+		}, h('span', { class: 'dot' }), `${seat + 1} ${info ? info.name : 'free'}${player?.away ? ' (away)' : ''}`);
 	}
 
 	async renderRecent() {
@@ -232,7 +269,7 @@ class NesTool {
 			button('Stop', 'stop', () => this.stopGame(), 'btn small danger'));
 		this.seatRows = Array.from({ length: PADS }, (_, i) => {
 			const select = h('select', { 'aria-label': `Player ${i + 1}`, onchange: () => this.game?.seats.assign(i, select.value || null) });
-			return { select, el: h('label', { class: 'nes-seat' }, h('span', {}, `Player ${i + 1}`), select) };
+			return { select, el: h('label', { class: 'nes-seat' }, h('span', { class: 'dot' }), h('span', {}, `Player ${i + 1}`), select) };
 		});
 		this.seatNote = h('p', { class: 'hint' });
 		const players = h('section', { class: 'nes-section' },
@@ -276,6 +313,8 @@ class NesTool {
 			pausedFor: null, // 'user' | 'away'
 			away: [],
 			names: new Map(), // source → who it is, kept while it's away
+			who: new Map(), // source 'pad:<n>' → {device, pad, name}, for the players in `game`, kept while it's away
+			wants: new Map(), // device ID → the seat its member asked for before its pad arrived
 			keyBits: 0,
 			touch: null, // the pad over the picture, while it's open
 			touchBits: 0,
@@ -355,6 +394,7 @@ class NesTool {
 		game.emulator?.destroy();
 		for (const call of game.viewers.values()) call.close();
 		game.release();
+		this.hub.setSeats(null);
 		wakeLock.release();
 		this.room.send(CH.NES, { type: 'game', title: null });
 		this.stage.hidden = true;
@@ -371,7 +411,17 @@ class NesTool {
 			title: game.rom.name,
 			paused: game.emulator.paused,
 			remote: typeof game.emulator.canvas?.captureStream === 'function',
+			players: game.seats.seats.map(source => source && this.playerOf(game, source)),
 		}, to);
+	}
+
+	/** A seat's player for the members: whose device, which of its pads, a name, and whether it's away. */
+	playerOf(game, source) {
+		const self = this.room.self;
+		if (source === 'host') return { device: self.deviceId, pad: 0, name: self.name, away: false };
+		if (source.startsWith('gp:')) return { device: self.deviceId, pad: Number(source.slice(3)) + 1, name: self.name, away: false };
+		const who = game.who.get(source);
+		return who ? { ...who, away: game.away.includes(source) } : null;
 	}
 
 	togglePause() {
@@ -473,10 +523,31 @@ class NesTool {
 		const game = this.game;
 		if (!game) return;
 		for (const pad of this.hub.list()) {
-			game.names.set(`pad:${pad.index}`, `${pad.name}${pad.local ? ` (gamepad ${pad.local})` : ''}`);
-			game.seats.arrive(`pad:${pad.index}`);
+			const source = `pad:${pad.index}`;
+			game.names.set(source, `${pad.name}${pad.local ? ` (gamepad ${pad.local})` : ''}`);
+			game.who.set(source, { device: pad.deviceId, pad: pad.local, name: pad.name });
+			const want = pad.local === 0 ? game.wants.get(pad.deviceId) : undefined;
+			if (want !== undefined) {
+				game.wants.delete(pad.deviceId);
+				this.takeSeat(game, source, want);
+			}
+			game.seats.arrive(source);
 		}
 		this.checkAway();
+	}
+
+	/** A member asked for a seat for its screen pad: it gets it if nobody has it. */
+	onSeat(msg, member) {
+		const game = this.game;
+		if (!game || !Number.isInteger(msg.seat) || msg.seat < 0 || msg.seat >= PADS) return;
+		game.wants.set(member.deviceId, msg.seat);
+		this.onPads(); // takes it now if the pad is here, else when it arrives
+		this.announce(member.peerId); // a refused request: the member sees who has the seat
+	}
+
+	takeSeat(game, source, seat) {
+		const was = game.seats.seats[seat];
+		if (was === null || was === source) game.seats.assign(seat, source);
 	}
 
 	checkAway() {
@@ -493,8 +564,18 @@ class NesTool {
 				emulator.setPaused(false);
 			}
 		}
+		this.hub.setSeats(new Map(game.seats.seats.flatMap((s, seat) => (s?.startsWith('pad:') ? [[Number(s.slice(4)), seat]] : []))));
 		this.renderSeats();
 		this.renderPause(); // the notice, and the touch pad's label
+		this.announce();
+	}
+
+	/** The colour of whoever plays from a source. */
+	colorOf(source) {
+		if (!source) return '';
+		if (!source.startsWith('pad:')) return this.room.self.color;
+		const device = this.game?.who.get(source)?.device;
+		return device ? memberColor(device) : '';
 	}
 
 	sourceLabel(source) {
@@ -519,6 +600,8 @@ class NesTool {
 				...sources.map(source => h('option', { value: source }, this.sourceLabel(source))));
 			row.select.value = seated ?? '';
 			row.el.classList.toggle('away', game.away.includes(seated));
+			row.el.classList.toggle('empty', !seated);
+			row.el.style.setProperty('--member', this.colorOf(seated) || 'transparent');
 		});
 		this.seatNote.textContent = 'Players 3 and 4 need a game made for four (Four Score). Choosing someone who already plays swaps the two.';
 	}
@@ -703,6 +786,7 @@ class NesTool {
 	onMessage(msg, member) {
 		if (!member) return;
 		if (msg?.type === 'game') this.onGame(msg, member);
+		else if (msg?.type === 'seat') this.onSeat(msg, member);
 		else if (msg?.type === 'watch' && this.game) {
 			if (msg.on === true) {
 				this.game.watchers.add(member.peerId);
@@ -727,7 +811,7 @@ class NesTool {
 			if (game === null) {
 				toast(`${member.name} stopped the game`);
 				guest.play.stop();
-			} else guest.play.setHostName(this.guestLabel(member));
+			} else this.renderGuest();
 		}
 		this.renderGames();
 		if (isNew && !this.ctx.visible()) this.ctx.notify();
@@ -737,11 +821,55 @@ class NesTool {
 		this.guest?.play.stop();
 		const video = mode === 'remote' ? h('video', { class: 'nes-remote', autoplay: true, playsinline: true }) : null;
 		if (video) video.playsInline = true;
-		const guest = { host: member.peerId, mode, video, call: null, play: null };
+		const guest = { host: member.peerId, mode, video, call: null, play: null, seats: null };
 		this.guest = guest;
-		guest.play = new PadPlay(this.room, member, { layout: 'nes', background: video, onStop: () => this.leave(guest) });
-		guest.play.setHostName(this.guestLabel(member));
+		guest.seatBtn = h('button', { type: 'button', class: 'pad-top-btn text', 'aria-haspopup': 'true', onclick: () => this.toggleSeats(guest) });
+		guest.play = new PadPlay(this.room, member, { layout: 'nes', background: video, actions: [guest.seatBtn], onStop: () => this.leave(guest) });
+		this.renderGuest();
 		if (video) this.room.send(CH.NES, { type: 'watch', on: true }, member.peerId);
+	}
+
+	/** The pad's top bar: the host, the game, and which player this device is. */
+	renderGuest() {
+		const guest = this.guest;
+		const host = guest && this.room.member(guest.host);
+		if (!host) return;
+		guest.play.setHostName(this.guestLabel(host));
+		const players = this.games.get(guest.host)?.players ?? [];
+		const seat = players.findIndex(p => this.playerInfo(p)?.mine);
+		guest.seatBtn.textContent = seat === -1 ? 'Not playing' : `Player ${seat + 1}`;
+		guest.seatBtn.setAttribute('aria-expanded', String(Boolean(guest.seats)));
+		if (!guest.seats) return;
+		guest.seats.replaceChildren(...Array.from({ length: PADS }, (_, i) => {
+			const info = this.playerInfo(players[i]);
+			return h('button', {
+				type: 'button',
+				class: `nes-player${info ? '' : ' free'}${info?.mine ? ' mine' : ''}`,
+				style: info ? `--member: ${info.color}` : '',
+				'data-seat': i,
+				disabled: Boolean(info),
+				'aria-current': info?.mine ? 'true' : null,
+				onclick: () => this.askSeat(guest, i),
+			}, h('span', { class: 'dot' }), `Player ${i + 1}`, h('span', { class: 'hint' }, info ? info.name : 'free'));
+		}));
+	}
+
+	/** The seats over the pad: a free one can be taken. */
+	toggleSeats(guest) {
+		if (guest.seats) {
+			guest.seats.remove();
+			guest.seats = null;
+		} else {
+			guest.seats = h('div', { class: 'pad-seats', role: 'group', 'aria-label': 'Players' });
+			guest.play.el.append(guest.seats);
+		}
+		this.renderGuest();
+	}
+
+	askSeat(guest, seat) {
+		if (this.guest !== guest) return;
+		this.room.send(CH.NES, { type: 'seat', seat }, guest.host);
+		this.toggleSeats(guest);
 	}
 
 	leave(guest) {

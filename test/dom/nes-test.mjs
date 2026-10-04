@@ -71,7 +71,8 @@ const { Room } = await import(`${ROOT}/app/room.js`);
 const { Emitter } = await import(`${ROOT}/app/emitter.js`);
 const { newRoomCode } = await import(`${ROOT}/app/rooms.js`);
 const { wakeLock } = await import(`${ROOT}/app/util.js`);
-const { default: nes, readGame } = await import(`${ROOT}/app/tools/nes/nes.js`);
+const { default: nes, readGame, readPlayers } = await import(`${ROOT}/app/tools/nes/nes.js`);
+const { InputHub } = await import(`${ROOT}/app/tools/controller/input.js`);
 const { Pacer, NES_FPS, nesFiles, romKind, isState } = await import(`${ROOT}/app/tools/nes/emulator.js`);
 const { NES, Seats, nesBits, readKeys, keyLabel } = await import(`${ROOT}/app/tools/nes/players.js`);
 
@@ -142,6 +143,13 @@ check('keys come back from storage, with the default for anything odd', readKeys
 check('keys have names for people', keyLabel('KeyX') === 'X' && keyLabel('ArrowLeft') === '←' && keyLabel('ShiftRight') === 'Shift (Right)');
 check('a game message is checked', readGame({ title: ' Zelda\x07 ', paused: true }).title === 'Zelda' && readGame({ title: null }) === null
 	&& readGame({ title: 5 }) === undefined && readGame({ title: '  ' }) === undefined && readGame({ title: 'x'.repeat(500) }).title.length === 80);
+{
+	const players = readPlayers([{ device: 'ab'.repeat(8), pad: 0, name: ' Ann\x07 ', away: true }, { device: '<b>', pad: 0 },
+		{ device: 'cd'.repeat(8), pad: 9 }, { device: 'ef'.repeat(8), pad: 2, name: 'x'.repeat(99) }, { device: 'ab'.repeat(8), pad: 0 }]);
+	check('a game’s players are checked: four seats, a bad one empty', players.length === 4 && players[0].name === 'Ann' && players[0].away
+		&& players[1] === null && players[2] === null && players[3].pad === 2 && players[3].name.length === 40);
+	check('and no players at all is four empty seats', readPlayers('nope').every(p => p === null) && readGame({ title: 'G' }).players.length === 4);
+}
 
 // The test ROM: NROM, 16 KB, no CHR. "PKNES!" at $20 (to find the RAM), NMI counts frames at $12 and reads 16 bits
 // from each port: pads 1 and 3 into $10 and $13, pads 2 and 4 into $11 and $14 (A in bit 7 … Right in bit 0).
@@ -367,6 +375,14 @@ const ppad = padOf();
 place(ppad);
 check('its top bar names the game', ppad.querySelector('.pad-host').textContent === 'Laptop · Test Game');
 await until('the phone takes Player 2', () => seat(1).value === 'pad:0' && seat(1).selectedOptions[0].textContent === 'Phone');
+const chip = (dev, i) => gameRow(dev)?.querySelector(`.nes-player[data-seat="${i}"]`);
+const seatBtn = pad => [...pad.querySelectorAll('.pad-top-btn')].find(b => /^(Player \d|Not playing)$/.test(b.textContent));
+await until('the room sees who plays: Laptop 1, Phone 2, two free seats', () => chip(T, 0)?.textContent === '1 Laptop' && chip(T, 1)?.textContent === '2 Phone'
+	&& chip(T, 2).classList.contains('free') && chip(T, 3).textContent === '4 free');
+check('in each member’s colour', chip(T, 1).style.getPropertyValue('--member') === P.room.self.color && chip(T, 0).style.getPropertyValue('--member') === L.room.self.color);
+check('the phone’s own seat is marked', chip(P, 1).classList.contains('mine') && !chip(T, 1).classList.contains('mine'));
+check('and the laptop’s Players have the colours too', seat(1).closest('.nes-seat').style.getPropertyValue('--member') === P.room.self.color);
+await until('the phone’s pad says it is Player 2', () => seatBtn(ppad)?.textContent === 'Player 2');
 pointer(ppad.querySelector('.pad-surface'), 'pointerdown', 770, 150, 1);
 await until('the phone’s A is A on pad 2', () => pads()[1] === A, 3000, () => pads().join());
 pointer(ppad.querySelector('.pad-surface'), 'pointerup', 770, 150, 1);
@@ -385,6 +401,29 @@ pointer(tpad.querySelector('.pad-surface'), 'pointerdown', 190, 100, 1);
 await until('the tablet’s right is Right on pad 3 (Four Score)', () => pads()[2] === RIGHT, 3000, () => pads().join());
 pointer(tpad.querySelector('.pad-surface'), 'pointerup', 190, 100, 1);
 await until('(up)', () => pads()[2] === 0);
+
+// The tablet picks another seat from its pad.
+await until('(the tablet’s pad knows its seat)', () => seatBtn(tpad)?.textContent === 'Player 3');
+seatBtn(tpad).click();
+const seatsPanel = tpad.querySelector('.pad-seats');
+const seatChoice = i => seatsPanel.querySelector(`[data-seat="${i}"]`);
+check('the seat button lists the four players over the pad', Boolean(seatsPanel) && seatsPanel.querySelectorAll('button').length === 4 && seatBtn(tpad).getAttribute('aria-expanded') === 'true');
+check('taken seats can’t be chosen, the free one can', seatChoice(0).disabled && seatChoice(1).disabled && seatChoice(1).textContent.includes('Phone') && !seatChoice(3).disabled
+	&& seatChoice(2).getAttribute('aria-current') === 'true');
+seatChoice(3).click();
+check('choosing closes the list', !tpad.querySelector('.pad-seats'));
+await until('the laptop puts the tablet on Player 4, and Player 3 is free', () => seat(3).value === 'pad:1' && seat(2).value === '');
+await until('the tablet’s pad says Player 4', () => seatBtn(tpad).textContent === 'Player 4');
+check('the Monitor numbers pads as the game does', InputHub.of(L.room).seats.get(1) === 3 && InputHub.of(L.room).seats.get(0) === 1);
+pointer(tpad.querySelector('.pad-surface'), 'pointerdown', 190, 100, 1);
+await until('the tablet’s right is Right on pad 4 now', () => pads()[3] === RIGHT && pads()[2] === 0, 3000, () => pads().join());
+pointer(tpad.querySelector('.pad-surface'), 'pointerup', 190, 100, 1);
+await until('(up again)', () => pads()[3] === 0);
+T.room.send('nes', { type: 'seat', seat: 0 }, L.room.self.peerId);
+T.room.send('nes', { type: 'seat', seat: 7 }, L.room.self.peerId);
+T.room.send('nes', { type: 'seat', seat: '1' }, L.room.self.peerId);
+await sleep(150);
+check('a seat someone has, or no seat at all, isn’t given', seat(0).value === 'host' && seat(1).value === 'pad:0' && seat(3).value === 'pad:1');
 
 // Swapping: the phone becomes Player 1, the laptop Player 2.
 seat(0).value = 'pad:0';
@@ -472,7 +511,7 @@ buttonByText(L.root, 'Reset').click();
 await until('Reset starts the game again in a new frame', () => L.root.querySelector('iframe.nes-frame') && L.root.querySelector('iframe.nes-frame') !== oldFrame && frameWin().Module?._setGamePadValue, 15000);
 check('the old one is gone, its sound closed', !oldFrame.isConnected && audio[0].closed);
 await until('the tablet gets the new picture', () => video.srcObject && video.srcObject !== oldStream);
-check('players stay', seat(1).value === 'pad:0' && seat(2).value === 'pad:1');
+check('players stay', seat(1).value === 'pad:0' && seat(3).value === 'pad:1');
 
 // Stop: the emulator unloads, the guests are told.
 const locks = wakeLock.count; // the game's and the two pads' (one process here, three devices)
@@ -541,6 +580,12 @@ coarsePointer = false;
 // A member that runs the tool later hears of the game on link up.
 const H = device('Headless', 'd');
 await until('a member that arrives sees the game running', () => gameRow(H)?.textContent.includes('Test Game'), 8000);
+check('with its players', chip(H, 0)?.textContent === '1 Laptop' && chip(H, 1)?.classList.contains('free'));
+// A seat asked for before the pad is there: the pad goes to it when it arrives, not to the first free one.
+H.room.send('nes', { type: 'seat', seat: 2 }, L.room.self.peerId);
+await sleep(100);
+buttonByText(gameRow(H), 'Controller').click();
+await until('a member that asked for Player 3 gets Player 3', () => seat(2).selectedOptions[0]?.textContent === 'Headless' && seat(1).value === '');
 
 // Leaving the room (unmounting) stops it.
 L.unmount();

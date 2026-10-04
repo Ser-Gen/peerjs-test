@@ -2900,8 +2900,46 @@ textarea.input {
 	border-left: 4px solid var(--member, var(--border));
 }
 
-.nes-game .dot {
+.nes-game > .dot {
 	display: none;
+}
+
+.nes-players {
+	flex-basis: 100%;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+}
+
+.nes-player {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	max-width: 100%;
+	padding: 0.15rem 0.55rem;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	font-size: 0.8125rem;
+	overflow-wrap: anywhere;
+}
+
+.nes-player .dot {
+	background: var(--member, transparent);
+	box-shadow: inset 0 0 0 1px var(--muted);
+}
+
+.nes-player.free {
+	color: var(--muted);
+	border-style: dashed;
+}
+
+.nes-player.away {
+	border-color: var(--warn);
+}
+
+.nes-player.mine {
+	font-weight: 600;
+	border-color: var(--member);
 }
 
 .nes-game-text {
@@ -3000,9 +3038,17 @@ textarea.input {
 	gap: 0.75rem;
 }
 
-.nes-seat > span {
+.nes-seat > span:not(.dot) {
 	min-width: 5rem;
 	font-weight: 600;
+}
+
+.nes-seat > .dot {
+	background: var(--member);
+}
+
+.nes-seat.empty > .dot {
+	box-shadow: inset 0 0 0 1px var(--muted);
 }
 
 .nes-seat select {
@@ -3047,4 +3093,52 @@ textarea.input {
 
 .nes-toolbar .btn[hidden] {
 	display: none;
+}
+
+/* A guest's choice of player, over its pad */
+.pad-seats {
+	position: absolute;
+	top: calc(3.5rem + env(safe-area-inset-top));
+	right: calc(0.75rem + env(safe-area-inset-right));
+	z-index: 2;
+	display: grid;
+	grid-template-columns: repeat(2, minmax(8rem, 12rem));
+	gap: 0.5rem;
+	padding: 0.5rem;
+	border: 1px solid #2b313c;
+	border-radius: 12px;
+	background: #181c23;
+	box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+}
+
+.pad-seats .nes-player {
+	min-height: 44px;
+	justify-content: flex-start;
+	border-radius: 10px;
+	border-color: #2b313c;
+	background: #101318;
+	color: inherit;
+	font: inherit;
+	font-size: 0.875rem;
+}
+
+.pad-seats .nes-player .hint {
+	margin-left: auto;
+	color: #98a2b3;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pad-seats .nes-player.free {
+	border-color: #98a2b3;
+}
+
+.pad-seats .nes-player:disabled {
+	opacity: 0.75;
+}
+
+.pad-seats .nes-player.mine {
+	border-color: var(--member);
+	opacity: 1;
 }

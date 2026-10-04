@@ -176,6 +176,13 @@ const surface = pad.querySelector('.pad-surface');
 check('the pad has a D-pad, Select, Start, B and A', ['D-pad', 'Select', 'Start', 'B', 'A'].every(label => byLabel(pad, label)));
 await until('the laptop shows the phone as player 1 at once', () => cardOf(L, 'Phone')?.textContent.includes('Player 1 · screen'));
 check('and marks the tab while the Monitor is out of sight', L.notified === 1);
+// A game on the laptop numbers its players: the Monitor shows the game's numbers while it runs.
+InputHub.of(L.room).setSeats(new Map([[0, 2]]));
+check('a game here makes the phone Player 3 on the Monitor', cardOf(L, 'Phone').textContent.includes('Player 3 · screen'));
+InputHub.of(L.room).setSeats(new Map());
+check('a pad the game leaves out is "Not playing"', cardOf(L, 'Phone').textContent.includes('Not playing · screen'));
+InputHub.of(L.room).setSeats(null);
+check('and with no game, pads are numbered in order again', cardOf(L, 'Phone').textContent.includes('Player 1 · screen'));
 L.shown = true;
 
 pointer(surface, 'pointerdown', 770, 150);

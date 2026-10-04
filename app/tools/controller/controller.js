@@ -65,6 +65,7 @@ class ControllerTool {
 		this.subs = [
 			this.hosts.on('change', () => this.onHosts()),
 			this.hub.on('pads', () => this.renderPads()),
+			this.hub.on('seats', () => this.renderPads()),
 			this.hub.on('state', slot => this.markDirty(slot)),
 		];
 		this.statsTimer = setInterval(() => this.renderStats(), 250);
@@ -209,7 +210,8 @@ class ControllerTool {
 			}
 			card.name.textContent = pad.name;
 			card.el.style.setProperty('--member', pad.color);
-			card.kind.textContent = `Player ${pad.index + 1} · ${pad.local ? `gamepad ${pad.local}` : 'screen'}`;
+			const seat = this.hub.seats ? this.hub.seats.get(pad.index) : pad.index; // a game's players, else in order
+			card.kind.textContent = `${seat === undefined ? 'Not playing' : `Player ${seat + 1}`} · ${pad.local ? `gamepad ${pad.local}` : 'screen'}`;
 			this.monitorList.append(card.el); // in slot order
 			this.markDirty(pad.index);
 		}

@@ -903,6 +903,26 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - NES: Four Score on; slots 1–4 map to pads 1–4. Remote players watch the game as a room stream (Slice 11) with the touch pad over it.
 - Kicking players and locking the room are gone from this slice: rooms have no removal. Starting a game in a new room is the way to play with a different group.
 
+**As built** (2026-10-04, app 0.16.0, `PROTOCOL_VERSION` 8)
+- Most of this came with Slice 15: four seats with Four Score always on, a member's pad taking the first free seat, the host's Players swapping seats, a seat kept by device across a reload (the game pauses until that pad is back), and the Monitor showing every pad.
+- **Who plays, for everyone**: the host's `game` message carries `players`, the four seats as `{device, pad, name, away}` (whose device, which of its pads: 0 its screen or keys, n its gamepad n). Each member's NES lobby shows the game with four chips in the players' colours ("1 Laptop", "2 Phone", "3 free"), its own seat marked and an away player marked. Names come from the room's members, so a rename shows at once; the name in the message is only for a player who isn't in the room.
+- **A free seat from the phone**: the pad's top bar has the player's seat ("Player 2", or "Not playing"). Tapping it lists the four seats over the pad; a free one can be taken (`seat {seat}` to the host), the others show who has them. The host gives only a free seat. A request that arrives before the pad does is kept until the pad arrives, so the pad goes straight to that seat.
+- The host's **Players** rows show each player's colour.
+- **Monitor**: while a game runs on the same device, its cards say the game's player number ("Player 3 · screen", or "Not playing"), from `InputHub.setSeats`; without a game they are numbered in order as before.
+- Differences from the plan:
+  - Remote players get the picture as the NES tool's own media call (Slice 15), not a room stream: only those who asked receive it, and other members' Stream tabs aren't filled with it.
+  - The host's screen swaps and moves anyone; a member can only take a free seat, never someone else's.
+- Messages: `seat {seat}` (guest → host) is new on ch `nes`, and `game` gained `players`; older version-8 devices ignore both.
+- Tests: `node test/run.mjs nes` (128 checks) adds:
+  - the chips with colours and the own seat;
+  - the tablet moving from Player 3 to Player 4 from its pad, after which its Right reaches pad 4;
+  - forged seat requests (a taken seat, no seat) refused;
+  - a request made before the pad arrives;
+  - a member arriving later seeing the players;
+  - `readPlayers` checking what it reads.
+
+  `node test/run.mjs controller` (76) checks the Monitor's numbers. Mutation-checked: a taken seat given anyway, a request ignored, `game` not sent again after a seat change, and the Monitor ignoring the game's numbers. Checked in Node, not in a browser.
+
 **Checklist**
 - [ ] Two phones in the laptop's room take slots 2 and 3; the lobby shows their colours and names.
 - [ ] Both controllers show separately on the monitor.

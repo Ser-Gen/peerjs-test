@@ -156,7 +156,7 @@ const blankPad = () => ({ buttons: 0, axes: [0, 0, 0, 0], quat: null });
  * a member that reloads comes back to the same slot.
  *
  * Events: 'pads' (a pad came or went), 'state' (slot, pad) on every message that changed it, 'press' / 'release'
- * (slot, button). `getPad(slot)` is shaped like a Gamepad (buttons with pressed/value, axes, mapping 'standard'),
+ * (slot, button), 'seats' (a game here says which player each pad is: `seats`, host slot → seat 0–3, or null). `getPad(slot)` is shaped like a Gamepad (buttons with pressed/value, axes, mapping 'standard'),
  * plus `orientation` (the quaternion, or null) and who it belongs to.
  */
 export class InputHub extends Emitter {
@@ -174,6 +174,7 @@ export class InputHub extends Emitter {
 		this.holders = 0;
 		this.pads = new Map(); // host slot → pad
 		this.slotOf = new Map(); // "<device ID>/<their slot>" → host slot
+		this.seats = null; // host slot → seat, while a game runs here
 		this.subs = [];
 	}
 
@@ -207,6 +208,14 @@ export class InputHub extends Emitter {
 		for (const off of this.subs.splice(0)) off();
 		this.room.send(CH.INPUT, { type: 'host', on: false });
 		for (const slot of [...this.pads.keys()]) this.remove(slot);
+	}
+
+	/** A game's players: host slot → seat (0–3), or null when no game runs. */
+	setSeats(seats) {
+		const same = (a, b) => a === b || (a && b && a.size === b.size && [...a].every(([k, v]) => b.get(k) === v));
+		if (same(this.seats, seats)) return;
+		this.seats = seats;
+		this.emit('seats');
 	}
 
 	/** The pads in slot order. */
