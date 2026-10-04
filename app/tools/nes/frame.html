@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NES</title>
+<!-- The NES tool's emulator page (app/tools/nes/emulator.js loads vendor/fceux/ into it); unloading it unloads the emulator. -->
+<style>
+	html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+	canvas {
+		display: block;
+		width: 100% !important;
+		height: 100% !important;
+		object-fit: contain;
+		image-rendering: crisp-edges;
+		image-rendering: pixelated;
+	}
+</style>
+</head>
+<body>
+<canvas id="canvas" width="256" height="224"></canvas>
+</body>
+</html>

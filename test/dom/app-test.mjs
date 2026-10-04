@@ -200,7 +200,7 @@ if (MODE === 'start') {
 	const layout = () => [...groups()].map(group => group.tools.join('+')).sort().join(' | ');
 	await until('the room opens with the tools as panels and no bottom tabs', () => $('#tool-host.docked .dock') && $('#tabs').hidden && groups().length === 2, 8000);
 	await until('with the member linked', () => $('.member-chip:nth-child(2)')?.textContent === 'Phone');
-	check('the default layout: Stream, Editor, Whiteboard and Controller in the main area, the Chat at the side', layout() === 'Chat | Stream+Editor+Whiteboard+Controller', layout());
+	check('the default layout: Stream, Editor, Whiteboard, Controller and NES in the main area, the Chat at the side', layout() === 'Chat | Stream+Editor+Whiteboard+Controller+NES', layout());
 	check('the Editor is in front in the main area', groupWith('Editor').front === 'Editor');
 	// The member here runs no editor, so it never answers the sync: past "Loading" is what shows it loaded.
 	await until('and loads by itself, since it can be seen', () => /Syncing with the room|Write together/.test($('.editor-message:not([hidden])')?.textContent), 10000);
@@ -276,10 +276,10 @@ if (MODE === 'start') {
 
 	// Reset layout: the default again.
 	$('#reset-layout').click();
-	await until('Reset layout brings back the default, with the stream in its panel', () => layout() === 'Chat | Stream+Editor+Whiteboard+Controller+Phone’s camera' && Boolean(groupWith('Chat').button('Float')) && Boolean(camTile()?.closest('.dock-panel')));
+	await until('Reset layout brings back the default, with the stream in its panel', () => layout() === 'Chat | Stream+Editor+Whiteboard+Controller+NES+Phone’s camera' && Boolean(groupWith('Chat').button('Float')) && Boolean(camTile()?.closest('.dock-panel')));
 	await until('and saves it', () => {
 		const saved = JSON.parse(localStorage.getItem('peerkit.layout'))?.layout;
-		return saved && !saved.floatingGroups?.length && Object.keys(saved.panels).filter(id => !id.includes(':')).length === 5;
+		return saved && !saved.floatingGroups?.length && Object.keys(saved.panels).filter(id => !id.includes(':')).length === 6;
 	}, 2000);
 
 	// A layout saved before the Whiteboard existed: kept as it was, with the new tool added next to the Editor.
@@ -298,18 +298,18 @@ if (MODE === 'start') {
 	setWide(true);
 	await until('a layout saved before the Whiteboard keeps its arrangement', () => groups().length === 2 && Boolean(groupWith('Chat')?.button('Put back')));
 	check('and gets the Whiteboard as a tab next to the Editor, behind the tool in front', groupWith('Whiteboard')?.el === groupWith('Editor').el && groupWith('Editor').front !== 'Whiteboard', layout());
-	await until('and saves it with the Whiteboard in it', () => Object.keys(JSON.parse(localStorage.getItem('peerkit.layout'))?.layout?.panels ?? {}).filter(id => !id.includes(':')).length === 5, 2000);
+	await until('and saves it with the Whiteboard in it', () => Object.keys(JSON.parse(localStorage.getItem('peerkit.layout'))?.layout?.panels ?? {}).filter(id => !id.includes(':')).length === 6, 2000);
 	check('a stream panel in a saved layout is not restored as an empty one: the stream opens its own', [...document.querySelectorAll('.dock-tab')].filter(tab => tab.textContent === 'Phone’s camera').length === 1 && Boolean(camTile()?.closest('.dock-panel')));
 
 	// A saved layout that doesn't fit (another app version, or edited by hand) is ignored.
 	setWide(false);
 	localStorage.setItem('peerkit.layout', JSON.stringify({ version: 1, layout: { panels: { transfer: {}, whiteboard: {} } } }));
 	setWide(true);
-	await until('a saved layout for other tools falls back to the default', () => layout() === 'Chat | Stream+Editor+Whiteboard+Controller+Phone’s camera' && Boolean(groupWith('Chat')?.button('Float')));
+	await until('a saved layout for other tools falls back to the default', () => layout() === 'Chat | Stream+Editor+Whiteboard+Controller+NES+Phone’s camera' && Boolean(groupWith('Chat')?.button('Float')));
 	phone.send(CH.STREAM, { type: 'stop', id: 'cam1' });
 	await until('(the camera ends)', () => camTile()?.textContent.includes('ended'));
 	buttonByText(camTile(), 'Close').click();
-	await until('closing the last stream leaves the default layout', () => layout() === 'Chat | Stream+Editor+Whiteboard+Controller');
+	await until('closing the last stream leaves the default layout', () => layout() === 'Chat | Stream+Editor+Whiteboard+Controller+NES');
 	await phone.leave();
 } else {
 	// A headless member ("Phone") already in the room.

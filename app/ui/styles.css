@@ -2780,3 +2780,271 @@ textarea.input {
 .mon-cube .bottom { left: 0; top: 2.7rem; width: 3rem; height: 0.6rem; }
 .mon-cube .top { transform: rotateX(90deg) translateZ(3rem); }
 .mon-cube .bottom { transform: rotateX(-90deg) translateZ(3rem); }
+
+/* Remote play (the NES tool's guests): the game's picture fills the pad, the buttons float over it. */
+.pad-play.over-picture {
+	background: #000;
+}
+
+.pad-picture {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	pointer-events: none;
+}
+
+.pad-picture video {
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+	image-rendering: pixelated;
+}
+
+.pad-play.over-picture .pad-top,
+.pad-play.over-picture .pad-surface {
+	position: relative;
+}
+
+.pad-play.over-picture .pad-top {
+	background: linear-gradient(rgb(0 0 0 / 0.6), transparent);
+}
+
+.pad-play.over-picture .pad-surface {
+	align-items: flex-end;
+}
+
+.pad-play.over-picture .pad-dpad,
+.pad-play.over-picture .pad-btn {
+	opacity: 0.55;
+}
+
+.pad-play.over-picture .pad-arrow.on,
+.pad-play.over-picture .pad-btn.on {
+	opacity: 0.9;
+}
+
+/* --- NES (app/tools/nes/) --- */
+
+.tool.nes {
+	overflow-y: auto;
+}
+
+.nes-body {
+	width: 100%;
+	max-width: 64rem;
+	margin: 0 auto;
+	padding: 1rem;
+}
+
+.nes-lobby,
+.nes-stage,
+.nes-section {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+}
+
+.nes-lobby {
+	gap: 1.5rem;
+}
+
+.nes-lobby[hidden],
+.nes-stage[hidden],
+.nes-section[hidden] {
+	display: none;
+}
+
+.nes-section h3 {
+	margin: 0;
+	color: var(--muted);
+	font-size: 0.8rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.nes-section .hint,
+.nes-game .hint,
+.nes-rom .hint {
+	margin: 0;
+}
+
+.nes-section > .btn {
+	align-self: flex-start;
+}
+
+.nes-games,
+.nes-recent,
+.nes-saves {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.nes-game,
+.nes-rom,
+.nes-save {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.5rem 0.75rem;
+	padding: 0.6rem 0.75rem;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: var(--surface);
+}
+
+.nes-game {
+	border-left: 4px solid var(--member, var(--border));
+}
+
+.nes-game .dot {
+	display: none;
+}
+
+.nes-game-text {
+	flex: 1;
+	min-width: 10rem;
+	display: flex;
+	flex-direction: column;
+	overflow-wrap: anywhere;
+}
+
+.nes-save > span:first-child {
+	font-weight: 600;
+}
+
+.nes-save > .hint {
+	flex: 1;
+}
+
+.nes-toolbar,
+.nes-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+}
+
+.nes-title {
+	flex: 1 1 100%;
+	overflow-wrap: anywhere;
+}
+
+@media (min-width: 640px) {
+	.nes-title {
+		flex: 1;
+	}
+}
+
+/* 256 × 224, square pixels, as large as fits. */
+.nes-screen-wrap {
+	position: relative;
+	width: 100%;
+	max-height: 75vh;
+	aspect-ratio: 256 / 224;
+	margin: 0 auto;
+	background: #000;
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+.nes-screen-wrap:fullscreen {
+	max-height: none;
+	border-radius: 0;
+}
+
+.nes-screen,
+.nes-frame {
+	width: 100%;
+	height: 100%;
+	border: 0;
+	display: block;
+}
+
+.nes-frame {
+	pointer-events: none; /* keys stay with this page, never the emulator's */
+}
+
+.nes-notice {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 1rem;
+	border: 0;
+	background: rgb(0 0 0 / 0.55);
+	color: #fff;
+	font: inherit;
+	font-weight: 600;
+	text-align: center;
+	cursor: pointer;
+}
+
+.nes-notice[hidden] {
+	display: none;
+}
+
+.nes-panels {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+	gap: 1.5rem;
+}
+
+.nes-seat {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.nes-seat > span {
+	min-width: 5rem;
+	font-weight: 600;
+}
+
+.nes-seat select {
+	flex: 1;
+	min-width: 0;
+	min-height: 40px;
+	font-size: 16px;
+}
+
+.nes-seat.away select {
+	border-color: var(--warn);
+}
+
+.nes-keys {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	margin: 0.75rem 0;
+}
+
+.nes-keys .btn {
+	min-width: 8rem;
+}
+
+/* The NES host's own touch pad: in its picture, which fills the screen while the pad is on. */
+.pad-play.inline {
+	position: absolute;
+	inset: 0;
+	z-index: 2;
+	background: transparent;
+}
+
+.nes-screen-wrap.pad-on {
+	position: fixed;
+	inset: 0;
+	z-index: 60;
+	width: auto;
+	max-height: none;
+	aspect-ratio: auto;
+	border-radius: 0;
+}
+
+.nes-toolbar .btn[hidden] {
+	display: none;
+}

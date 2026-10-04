@@ -1,3 +1,4 @@
+import { musicSdp } from '../mediacall.js';
 import { CH } from '../protocol.js';
 import { button, h, icon, toast } from '../ui/dom.js';
 import { randomId, readJSON, wakeLock, writeJSON } from '../util.js';
@@ -11,7 +12,6 @@ const AUDIO = { echoCancellation: true, noiseSuppression: true, autoGainControl:
 // System audio is music and video sound, not a voice: no processing. restrictOwnAudio (where supported)
 // keeps this page's own playback, such as the other device's camera sound, out of the capture.
 const SCREEN_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true };
-const MUSIC_BITRATE = 256000;
 const KINDS = ['camera', 'screen'];
 const KIND_NOUN = { camera: 'camera', screen: 'screen' };
 const MAX_INCOMING = 16; // streams shown at once; 8 members with a camera and a screen each
@@ -125,19 +125,6 @@ function mediaError(err, kind) {
 		default:
 			return `Could not start ${what}.`;
 	}
-}
-
-/**
- * WebRTC tunes Opus for speech by default: mono, about 32 kbit/s, silence dropped. For screen audio ask
- * for stereo at a music bitrate. Both sides apply it to their own SDP, since the sender follows the answer.
- */
-function musicSdp(sdp) {
-	const pt = /a=rtpmap:(\d+) opus\/48000/i.exec(sdp)?.[1];
-	if (!pt) return sdp;
-	return sdp.replace(new RegExp(`a=fmtp:${pt} (.*)`), (_, params) => {
-		const kept = params.split(';').map(p => p.trim()).filter(p => p && !/^(stereo|sprop-stereo|maxaveragebitrate|usedtx)=/.test(p));
-		return `a=fmtp:${pt} ${[...kept, 'stereo=1', 'sprop-stereo=1', `maxaveragebitrate=${MUSIC_BITRATE}`, 'usedtx=0'].join(';')}`;
-	});
 }
 
 const callOptions = kind => (kind === 'screen' ? { sdpTransform: musicSdp } : {});

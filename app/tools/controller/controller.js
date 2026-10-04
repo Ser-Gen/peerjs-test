@@ -1,27 +1,16 @@
-import { CH } from '../../protocol.js';
-import { button, h, icon, toast } from '../../ui/dom.js';
-import { readJSON, wakeLock, writeJSON } from '../../util.js';
-import { BUTTONS, BUTTON_NAMES, HostList, INPUT_TIMING, InputHub, InputSender } from './input.js';
-import { Motion } from './motion.js';
+import { button, h, toast } from '../../ui/dom.js';
+import { readJSON, writeJSON } from '../../util.js';
+import { BUTTON_NAMES, HostList, INPUT_TIMING, InputHub } from './input.js';
+import { LAYOUTS, PadPlay, localGamepads } from './pad.js';
 
 const PREFS_KEY = 'peerkit.controller';
 const PREFS_VERSION = 1;
 const MODES = ['pad', 'monitor'];
-const LAYOUTS = { nes: 'NES pad', motion: 'Motion' };
-const MAX_GAMEPADS = 4; // slots 1–4
-const SLOP = 14; // px around a button that still counts as on it, for thumbs
-const DPAD_DEAD = 0.2; // of the D-pad's radius: the middle presses nothing
-const B = { SOUTH: 0, EAST: 1, RT: 7, SELECT: 8, START: 9, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
-const bit = i => 1 << i;
 
 /*
  * The Controller tool: this device as a game pad for another member (Controller), or the input that reaches it
  * (Monitor). Messages and pacing are in input.js; the Monitor holds the room's InputHub, which is what makes this
- * device a host that controllers can choose.
- *
- * NES pad: a D-pad, Select, Start, B and A (Standard Gamepad 12–15, 8, 9, 0 and 1: NES B is the bottom button,
- * A the right one). Motion: one big trigger (7) and the phone's orientation. Both full screen, landscape, with the
- * screen kept on and a short vibration on each press. Gamepads plugged into the phone go along as slots 1–4.
+ * device a host that controllers can choose. The full-screen pad itself is pad.js.
  */
 
 export default {
@@ -77,24 +66,11 @@ class ControllerTool {
 			this.hosts.on('change', () => this.onHosts()),
 			this.hub.on('pads', () => this.renderPads()),
 			this.hub.on('state', slot => this.markDirty(slot)),
-			room.on(`msg:${CH.INPUT}`, (msg, member) => {
-				if (msg?.type === 'echo' && this.play?.host === member?.peerId) this.play.sender.onEcho(msg);
-			}),
-			room.on('link-down', member => {
-				if (this.play?.host === member.peerId) {
-					toast(`${member.name} left: the controller stopped`);
-					this.stop();
-				}
-			}),
 		];
 		this.statsTimer = setInterval(() => this.renderStats(), 250);
 		this.onGamepads = () => this.renderGamepads();
 		window.addEventListener('gamepadconnected', this.onGamepads);
 		window.addEventListener('gamepaddisconnected', this.onGamepads);
-		this.onFullscreen = () => {
-			if (this.play?.full && !document.fullscreenElement) this.stop(); // Back left full screen
-		};
-		document.addEventListener('fullscreenchange', this.onFullscreen);
 
 		el.classList.add('controller');
 		this.modeBar = h('div', { class: 'segmented controller-modes', role: 'group', 'aria-label': 'Use this device as' },
@@ -183,19 +159,15 @@ class ControllerTool {
 		this.startBtn.disabled = !target;
 		if (!this.play) return;
 		const host = hosts.find(m => m.peerId === this.play.host);
-		if (host) this.play.hostName.textContent = host.name;
+		if (host) this.play.setHostName(host.name);
 		else if (this.room.member(this.play.host)) {
 			toast(`${this.room.member(this.play.host).name} stopped taking input`);
 			this.stop();
 		}
 	}
 
-	gamepads() {
-		return [...(navigator.getGamepads?.() ?? [])].filter(Boolean).filter(gp => gp.index < MAX_GAMEPADS);
-	}
-
 	renderGamepads() {
-		const pads = this.gamepads();
+		const pads = localGamepads();
 		this.gamepadLine.textContent = pads.length
 			? `Gamepad${pads.length > 1 ? 's' : ''} here, sent along while playing: ${pads.map(gp => gp.id.split('(')[0].trim() || 'Gamepad').join(', ')}`
 			: 'A gamepad plugged into this device is sent along while playing.';
@@ -203,176 +175,19 @@ class ControllerTool {
 
 	// --- Controller: playing ---
 
-	async start() {
+	start() {
 		const host = this.target();
 		if (!host || this.play) return;
-		const layout = this.prefs.layout;
-		const sender = new InputSender(this.room, host.peerId);
-		const surface = h('div', { class: 'pad-surface', 'data-layout': layout });
-		const hostName = h('span', { class: 'pad-host', style: `--member: ${host.color}` }, host.name);
-		const latency = h('span', { class: 'pad-latency' });
-		const stopBtn = h('button', { type: 'button', class: 'pad-top-btn', 'aria-label': 'Stop', title: 'Stop', onclick: () => this.stop() }, icon('close'));
-		const top = h('div', { class: 'pad-top' }, hostName, latency, stopBtn);
-		const el = h('div', { class: 'pad-play' }, top, surface);
-		const play = (this.play = {
-			host: host.peerId, layout, sender, el, surface, hostName, latency, zones: [], pointers: new Map(), buttons: 0,
-			motion: null, quat: null, full: false, frame: 0, gamepads: new Set(),
+		this.play = new PadPlay(this.room, host, {
+			layout: this.prefs.layout,
+			onStop: () => {
+				this.play = null;
+			},
 		});
-		if (layout === 'nes') this.buildNes(play);
-		else this.buildMotion(play, top);
-		surface.addEventListener('pointerdown', e => this.onPointer(e));
-		surface.addEventListener('pointermove', e => this.onPointer(e));
-		for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) surface.addEventListener(type, e => this.onPointerEnd(e));
-		surface.addEventListener('contextmenu', e => e.preventDefault()); // a long press is a held button
-		document.body.append(el);
-		wakeLock.acquire();
-		sender.set(0, { buttons: 0 }); // the host shows the pad at once
-		this.pollGamepads();
-		try {
-			await document.documentElement.requestFullscreen?.({ navigationUI: 'hide' });
-			play.full = Boolean(document.fullscreenElement);
-			await screen.orientation?.lock?.('landscape');
-		} catch {
-			// Not allowed here (a desktop browser, or iOS): the pad works in the page as it is.
-		}
-	}
-
-	buildNes(play) {
-		const zone = (index, label, cls) => {
-			const el = h('div', { class: `pad-btn ${cls}`, 'data-button': index, 'aria-label': label }, label);
-			play.zones.push({ el, bits: () => bit(index) });
-			return el;
-		};
-		const dpad = h('div', { class: 'pad-dpad', 'aria-label': 'D-pad' },
-			...['up', 'down', 'left', 'right'].map(dir => h('span', { class: `pad-arrow ${dir}` })));
-		play.zones.push({ el: dpad, dpad: true });
-		play.surface.append(
-			h('div', { class: 'pad-left' }, dpad),
-			h('div', { class: 'pad-middle' }, zone(B.SELECT, 'Select', 'small'), zone(B.START, 'Start', 'small')),
-			h('div', { class: 'pad-right' }, zone(B.SOUTH, 'B', 'round b'), zone(B.EAST, 'A', 'round a')));
-	}
-
-	buildMotion(play, top) {
-		const trigger = h('div', { class: 'pad-btn trigger', 'data-button': B.RT, 'aria-label': 'Trigger' }, 'Trigger');
-		play.zones.push({ el: trigger, bits: () => bit(B.RT) });
-		const status = h('p', { class: 'pad-motion-status' }, 'Starting motion…');
-		top.insertBefore(button('Recenter', 'fit', () => play.motion?.recenter(), 'pad-top-btn text'), top.lastChild);
-		play.surface.append(h('div', { class: 'pad-motion' }, trigger, status));
-		play.motion = new Motion(quat => {
-			play.quat = quat;
-			this.sendPad();
-		});
-		play.motion.start().then(source => {
-			if (this.play !== play) return;
-			status.textContent = source ? 'Tilt and turn the phone; Recenter makes the way it points now straight ahead.'
-				: 'This device gives no orientation: only the trigger is sent.';
-		});
-	}
-
-	/** Which buttons a point presses: the zone under it, or the nearest one within SLOP. */
-	hit(x, y) {
-		let best = null;
-		let bestDist = SLOP;
-		for (const zone of this.play.zones) {
-			const r = zone.el.getBoundingClientRect();
-			if (zone.dpad) {
-				const cx = r.left + r.width / 2;
-				const cy = r.top + r.height / 2;
-				const radius = Math.min(r.width, r.height) / 2;
-				const dx = x - cx;
-				const dy = y - cy;
-				const d = Math.hypot(dx, dy);
-				if (!radius || d > radius + SLOP || d < radius * DPAD_DEAD) continue;
-				// Eight directions: each 45° sector around an axis presses one arrow, between two it presses both.
-				const sector = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
-				const bits = [bit(B.RIGHT), bit(B.RIGHT) | bit(B.DOWN), bit(B.DOWN), bit(B.DOWN) | bit(B.LEFT), bit(B.LEFT),
-					bit(B.LEFT) | bit(B.UP), bit(B.UP), bit(B.UP) | bit(B.RIGHT)][(sector + 8) % 8];
-				return bits;
-			}
-			const dx = Math.max(r.left - x, 0, x - r.right);
-			const dy = Math.max(r.top - y, 0, y - r.bottom);
-			const d = Math.hypot(dx, dy);
-			if (d === 0) return zone.bits();
-			if (d < bestDist) {
-				bestDist = d;
-				best = zone;
-			}
-		}
-		return best ? best.bits() : 0;
-	}
-
-	onPointer(e) {
-		const play = this.play;
-		if (!play) return;
-		if (e.type === 'pointerdown') {
-			e.preventDefault();
-			try {
-				play.surface.setPointerCapture(e.pointerId);
-			} catch {
-				// a pointer that is already gone
-			}
-		} else if (!play.pointers.has(e.pointerId)) return; // a hovering mouse
-		play.pointers.set(e.pointerId, this.hit(e.clientX, e.clientY));
-		this.sendPad();
-	}
-
-	onPointerEnd(e) {
-		if (!this.play?.pointers.delete(e.pointerId)) return;
-		this.sendPad();
-	}
-
-	sendPad() {
-		const play = this.play;
-		if (!play) return;
-		let buttons = 0;
-		for (const bits of play.pointers.values()) buttons |= bits;
-		const pressed = buttons & ~play.buttons;
-		if (pressed) navigator.vibrate?.(12);
-		play.buttons = buttons;
-		for (const zone of play.zones) {
-			const on = zone.dpad ? (buttons & (bit(B.UP) | bit(B.DOWN) | bit(B.LEFT) | bit(B.RIGHT))) !== 0 : (buttons & zone.bits()) !== 0;
-			zone.el.classList.toggle('on', on);
-			if (zone.dpad) for (const [dir, i] of [['up', B.UP], ['down', B.DOWN], ['left', B.LEFT], ['right', B.RIGHT]]) {
-				zone.el.querySelector(`.${dir}`).classList.toggle('on', (buttons & bit(i)) !== 0);
-			}
-		}
-		play.sender.set(0, { buttons, quat: play.quat });
-	}
-
-	/** Gamepads plugged into this device, read every frame while playing (the Gamepad API has no events for input). */
-	pollGamepads() {
-		const play = this.play;
-		if (!play) return;
-		const seen = new Set();
-		for (const gp of this.gamepads()) {
-			const slot = gp.index + 1;
-			seen.add(slot);
-			let buttons = 0;
-			gp.buttons.slice(0, BUTTONS).forEach((b, i) => {
-				if (b?.pressed) buttons |= bit(i);
-			});
-			play.sender.set(slot, { buttons, axes: [...gp.axes].slice(0, 4) });
-		}
-		for (const slot of play.gamepads) if (!seen.has(slot)) play.sender.leave(slot);
-		play.gamepads = seen;
-		play.frame = requestAnimationFrame(() => this.pollGamepads());
 	}
 
 	stop() {
-		const play = this.play;
-		if (!play) return;
-		this.play = null;
-		cancelAnimationFrame(play.frame);
-		play.motion?.stop();
-		play.sender.destroy();
-		play.el.remove();
-		wakeLock.release();
-		try {
-			screen.orientation?.unlock?.();
-		} catch {
-			// never locked
-		}
-		if (play.full && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+		this.play?.stop();
 	}
 
 	// --- Monitor ---
@@ -464,10 +279,6 @@ class ControllerTool {
 			card.stats.title = 'Latency (half the round trip of the input channel) and messages per second';
 			card.el.classList.toggle('quiet', quiet);
 		}
-		if (this.play) {
-			const rtt = this.play.sender.rtt;
-			this.play.latency.textContent = rtt == null ? '' : `${Math.max(1, Math.round(rtt / 2))} ms`;
-		}
 	}
 
 	destroy() {
@@ -479,6 +290,5 @@ class ControllerTool {
 		this.hosts.destroy();
 		window.removeEventListener('gamepadconnected', this.onGamepads);
 		window.removeEventListener('gamepaddisconnected', this.onGamepads);
-		document.removeEventListener('fullscreenchange', this.onFullscreen);
 	}
 }

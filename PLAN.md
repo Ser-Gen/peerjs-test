@@ -861,6 +861,29 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - Input: the Slice 14 input channel; the host maps each slot to a pad and calls `_setGamePadValue`.
 - When the guest drops, the game pauses; it continues on reconnect.
 
+**As built** (2026-10-04, app 0.15.0, `PROTOCOL_VERSION` 8)
+- **The emulator**: FCEUX 2.2.3 from [hauxir/fceux](https://github.com/hauxir/fceux) at `7cc37cc`, the fork whose commits add exactly what Kosmi's build exports (`setGamePadValue`, `saveState` / `loadState`, `enableFourScore`, and the two edits to the built script). The files from `4player-nes` are in `vendor/fceux/` renamed and otherwise unchanged, with the GPL-2.0 text and the source named in `vendor/README.md`. The service worker caches them on first use, so a phone that only plays never downloads them.
+- **One NES tool** (`app/tools/nes/`, a sixth tab on phones, a panel in the main area on a wide screen). Without a game it shows **Games in this room** (each member's game, with **Controller** and **Remote play**), **Play here** (Open a ROM…) and **Continue** (the last 8 ROMs, kept in IndexedDB by hash, with Forget).
+- **Host**: the picture as large as fits (256 × 224, square pixels, `image-rendering: pixelated`), Pause, Reset, Mute, Full screen and Stop.
+  - Speed: the build runs one frame per `requestAnimationFrame`, so the iframe's is replaced and frames are run from the page's own at 60.0988 Hz, at most two per screen frame. A 120 or 144 Hz screen runs at the right speed, and a hidden page stops the game instead of making it rush afterwards.
+  - **Players**: four seats, each a select. This device's keyboard and first gamepad are Player 1, a member's pad takes the first free seat when it arrives, another gamepad here likewise. Choosing someone who already plays swaps the two; one moved off stays off. Players 3 and 4 need a Four Score game (Four Score is always on).
+  - **Keys…** remaps the 8 buttons (by `KeyboardEvent.code`, remembered); keys go to the game only while the tool is on screen and focus isn't in a text field. A press shorter than a frame is held for two frames, so a quick tap is never lost.
+  - **Saves**: three slots per ROM, kept with the ROM's hash (they come back when the ROM is opened again), plus Export (`<game>.fcs`) and Import.
+  - Sound: the browser may hold it until a tap ("Tap for sound" over the picture). Mute turns down the speakers only, not the stream.
+  - **Touch pad** (on a touch screen): the host plays on its own screen. The NES pad goes over the game's picture, which fills the screen (full screen where allowed), with Pause/Resume and Stop in its top bar; Stop closes the pad, not the game. Its buttons are part of "this device" with the keys and the first gamepad (Player 1 by default), and quick taps are held two frames like keys. The emulator's frame is never moved, since moving an iframe reloads it.
+- **Guest**: **Controller** is the Slice 14 NES pad, sent to the host. **Remote play** is the same pad over the game's picture and sound, a media call from the host (music Opus, as for screen audio). The pad's top bar names the host, the game and "paused".
+- **A player who drops** (link down, Stop, or a reload) pauses the game, the picture says who it's waiting for, and it goes on by itself when their pad is back (their seat is kept by device). A tap on the picture goes on without them.
+- **Stop** (or leaving the room) removes the iframe and closes its sound: the emulator is gone. Guests' pads stop with "<name> stopped the game".
+- Messages (ch `nes`, no new protocol number): `game {title, paused, remote}` from the host on every change and link up (title null: stopped), `watch {on}` from a guest that wants the picture. Pads are Slice 14's `input`.
+- The Controller tool's full-screen pad moved to `app/tools/controller/pad.js` (`PadPlay`) so both tools use it; `musicSdp` moved to `app/mediacall.js` for the same reason.
+- Differences from the plan:
+  - Reset boots the ROM again: the build has no reset.
+  - Player 1 is this device's keyboard and first gamepad together, so a gamepad on the laptop plays Player 1 without choosing it.
+  - The Remote play picture comes as a media call of its own from the NES tool, not a room stream: only the guests that ask get it.
+  - "Leave the tab" unloads nothing: switching to another tool keeps the game running (it's a panel on a wide screen). A hidden page or Stop does stop it.
+  - A guest's own keyboard isn't mapped yet in Remote play (its gamepads are).
+- Tests: `node test/run.mjs nes` (109 checks) runs the real build in Node with a ROM made in the test (a few dozen bytes of 6502 that count frames and read all four pads into RAM), so the checks read what the game sees: the pacing on 50/60/120/144 Hz, keys and a tap, a phone and a tablet as players 2 and 3, swapping, a dropped player pausing the game until they're back, Pause, Mute, keys, save slots, export and import, Reset, Stop unloading the emulator, Continue, the host's touch pad over its own picture (held buttons, a quick tap, keys alongside, Pause on the pad, Stop closing the pad only), and a member arriving later. Mutation-checked (frame pacing, tap hold, pausing, the replaced animation frame, swapping, Four Score, the touch pad's buttons, where it goes). Checked in Node, not in a browser.
+
 **Checklist**
 - [ ] Load a legally obtained ROM on the laptop: picture and sound at the right speed on a 60 Hz and on a 120 Hz+ screen.
 - [ ] Phone in Controller only: player 2 responds with no noticeable lag; the laptop keyboard controls player 1.

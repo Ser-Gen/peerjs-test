@@ -12,6 +12,7 @@ export const CH = {
 	BOARD: 'board', // the whiteboard's boards, Yjs sync and awareness like DOC (app/tools/whiteboard/)
 	RTC: 'rtc', // media calls: offer, answer, ICE candidates and close, over the link (app/mediacall.js)
 	INPUT: 'input', // controllers: pads, motion and who takes them, mostly over the fast channel (app/tools/controller/input.js)
+	NES: 'nes', // who runs a game and who watches it (the pads are INPUT, the picture a media call; app/tools/nes/nes.js)
 };
 
 /*

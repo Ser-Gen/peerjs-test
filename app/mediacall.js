@@ -8,6 +8,20 @@ const MAX_META = 1000;
 const ICE_RESTARTS = 2; // after ICE fails, the caller tries this many restarts before it gives up on the call
 const CALLEE_GIVE_UP = 30000; // a callee whose ICE failed waits this long for the caller's restart
 const CALL_ID = /^[0-9a-f]{16}$/;
+const MUSIC_BITRATE = 256000;
+
+/**
+ * WebRTC tunes Opus for speech by default: mono, about 32 kbit/s, silence dropped. For screen audio (and a game) ask
+ * for stereo at a music bitrate. Both sides apply it to their own SDP, since the sender follows the answer.
+ */
+export function musicSdp(sdp) {
+	const pt = /a=rtpmap:(\d+) opus\/48000/i.exec(sdp)?.[1];
+	if (!pt) return sdp;
+	return sdp.replace(new RegExp(`a=fmtp:${pt} (.*)`), (_, params) => {
+		const kept = params.split(';').map(p => p.trim()).filter(p => p && !/^(stereo|sprop-stereo|maxaveragebitrate|usedtx)=/.test(p));
+		return `a=fmtp:${pt} ${[...kept, 'stereo=1', 'sprop-stereo=1', `maxaveragebitrate=${MUSIC_BITRATE}`, 'usedtx=0'].join(';')}`;
+	});
+}
 
 /*
  * A media call between two members, negotiated over their link (ch 'rtc') instead of through the signaling
