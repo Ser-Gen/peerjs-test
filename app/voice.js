@@ -11,6 +11,8 @@ const REDIAL_DELAY = 1000;
 const REDIAL_TRIES = 5; // after this many quick tries the pair keeps trying, slowly, while both are in voice
 const SLOW_REDIAL = 15000;
 const CALL_TIMEOUT = 10000; // ms to wait for the audio of a call before dialing again
+const ROUTE_TIMEOUT = 45000; // ms a call still looking for a network route (ICE checking) is given in all
+const SEARCHING = new Set(['new', 'checking', 'disconnected']); // ICE states that may still connect
 export const MAX_VOLUME = 2; // a member can be turned up to 200 % (an <audio> element stops at 100 %; see boost())
 
 /*
@@ -314,6 +316,7 @@ export class Voice extends Emitter {
 
 	attach(peer, call) {
 		peer.call = call;
+		peer.dialled = Date.now();
 		// A listener sends nothing back, so only a member with a microphone is waited for.
 		peer.watch = peer.mic ? setTimeout(() => this.stalled(peer, call), CALL_TIMEOUT) : null;
 		call.on('stream', stream => {
@@ -356,9 +359,17 @@ export class Voice extends Emitter {
 			return;
 		}
 		const pc = call.peerConnection;
-		// The state of the connection is the only clue there is when a call goes nowhere, so say it out loud.
+		const ice = pc?.iceConnectionState;
+		// Still trying routes: through a relay that can take a while, and dialing again would only start over.
+		// ICE that fails is restarted by the call itself (mediacall.js), and a call that gives up closes.
+		if (SEARCHING.has(ice) && Date.now() - peer.dialled < ROUTE_TIMEOUT) {
+			peer.watch = setTimeout(() => this.stalled(peer, call), Math.min(CALL_TIMEOUT, peer.dialled + ROUTE_TIMEOUT - Date.now()));
+			return;
+		}
+		// The state of the connection is the only clue there is when a call goes nowhere, so say it out loud,
+		// with the kinds of route each side offered (host, srflx: through the NAT, relay: through TURN).
 		console.warn(`[peerkit] no audio from ${peer.name}; dialing again`,
-			{ ice: pc?.iceConnectionState, connection: pc?.connectionState, signaling: pc?.signalingState });
+			{ ice, connection: pc?.connectionState, signaling: pc?.signalingState, candidates: call.candidates });
 		// The other side may be hearing us fine and have no reason to give up: it has to be told.
 		this.hangUp(peer);
 		this.retry(peer);

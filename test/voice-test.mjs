@@ -292,8 +292,20 @@ check('(back to listening)', c.voice.listening && hears(c, a) === a.voice.stream
 
 check('a call that has brought audio is not waited for any more', peerOf(a, b).watch === null && peerOf(b, a).watch === null);
 check('and a listener is never waited for: it has nothing to send back', peerOf(a, c).watch === null);
-const stalled = callBetween(a, b);
+const searching = callBetween(a, b);
+searching.peerConnection.iceConnectionState = 'checking';
+a.voice.stalled(peerOf(a, b), searching);
+check('a call still looking for a route (ICE checking) is waited for, not dialled again',
+	!searching.closed && callBetween(a, b) === searching && peerOf(a, b).watch !== null);
+peerOf(a, b).dialled -= 46000;
 const warn = console.warn;
+console.warn = () => {};
+a.voice.stalled(peerOf(a, b), searching);
+await settle();
+console.warn = warn;
+check('but not for ever: after 45 s it is given up on', searching.closed && callBetween(a, b) === null);
+await sleep(REDIAL_DELAY + 100);
+const stalled = callBetween(a, b);
 console.warn = () => {};
 a.voice.stalled(peerOf(a, b), stalled);
 await settle();

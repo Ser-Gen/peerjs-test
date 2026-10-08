@@ -54,6 +54,7 @@ export class MediaCall extends Emitter {
 		this.closed = false;
 		this.restarts = 0;
 		this.giveUp = null;
+		this.candidates = { sent: {}, received: {} }; // ICE candidates by type (host, srflx, relay), for the logs
 		this._open = false;
 	}
 
@@ -137,7 +138,9 @@ export class MediaCall extends Emitter {
 		const pc = (this.peerConnection = new RTCPeerConnection(this.room.rtcConfig));
 		pc.onicecandidate = event => {
 			const c = event.candidate;
-			if (c?.candidate) this._send('ice', { c: { candidate: c.candidate, sdpMid: c.sdpMid ?? null, sdpMLineIndex: c.sdpMLineIndex ?? null } });
+			if (!c?.candidate) return;
+			count(this.candidates.sent, c.candidate);
+			this._send('ice', { c: { candidate: c.candidate, sdpMid: c.sdpMid ?? null, sdpMLineIndex: c.sdpMLineIndex ?? null } });
 		};
 		pc.ontrack = event => {
 			if (this.closed) return;
@@ -171,6 +174,7 @@ export class MediaCall extends Emitter {
 
 	_onIce(candidate) {
 		if (this.closed) return;
+		count(this.candidates.received, candidate.candidate);
 		const pc = this.peerConnection;
 		if (!pc?.remoteDescription) {
 			if (this.pending.length < MAX_PENDING) this.pending.push(candidate);
@@ -236,6 +240,12 @@ export class MediaCall extends Emitter {
 		this.emit('error', err);
 		this.close();
 	}
+}
+
+/** Counts a candidate by its type ("… typ relay …"). */
+function count(counts, candidate) {
+	const type = /\styp\s(\w+)/.exec(candidate)?.[1] ?? 'other';
+	counts[type] = (counts[type] ?? 0) + 1;
 }
 
 /** A signaling message from a member, checked; null when it isn't one. Everything a member sends is untrusted. */
