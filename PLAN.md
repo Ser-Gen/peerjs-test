@@ -972,6 +972,38 @@ Two Peer objects in one tab on Android Chrome can only be checked in the browser
 - [ ] Swing test: a hard swing and a soft swing give clearly different readings; left/right direction is correct.
 - [ ] Leaving a game returns phones to the normal controller.
 
+### Slice 18 — Where the others are
+
+**Why:** asked for after using the room together: it should be easier to see where the other people are at the moment, which tool, which part of a document, which part of a board.
+
+**Build**
+- The tabs: a mark in each member's colour on the tab (or panel tab) of the tool they are looking at.
+- The Editor: the lines another member sees, as a stripe at the side.
+- The Whiteboard: a minimap that shows, schematically, what is drawn and where the others are.
+
+**As built** (2026-10-08, app 0.18.0, `PROTOCOL_VERSION` 8)
+- **Tabs.** Each device says which tool it has in front (`app/presence.js`, ch `presence`: `here {tool}`): the selected tab on a phone, the active panel on a wide screen (a stream's own panel counts as the Stream tool), and nothing while its page is hidden. It is sent 250 ms after a change, so flicking through tabs sends only where it stops, and on every link up. The tab of that tool gets a 3 px stripe in the member's colour along its edge next to the content (the top of a bottom tab, the bottom of a panel tab), one segment per member, and the tab's title says "Phone is here". A member's chip in the room bar says it too ("Phone: in Whiteboard, 30 ms").
+- **The Editor.** Each device puts the lines it has in view in the document's awareness (`view: {top, bottom}`, logical lines from 0, at most every 150 ms while scrolling). For each other member on the same document:
+  - a stripe in their colour at the left edge beside the lines they see (side by side when there are several); when their lines are above or below what is on screen, a short wider stripe at that edge says which way;
+  - a mark on a thin rail at the right that stands for the whole document, with this device's own view as an outline. A click on a mark scrolls to the lines that member sees, and its title says which ("Phone sees lines 120–160").
+
+  Lines, not pixels or characters, so it works across CodeMirror and Monaco, different text sizes and wrapping. Both editors have the same few methods for it (`visibleLines`, `lineSpan`, `lineCount`, `revealLine`, `onView`).
+- **The Whiteboard.** Each device puts what it sees of the board in awareness (`view: [x, y, w, h]` in board units, at most every 200 ms while panning). The **minimap** (`minimap.js`) in the bottom-right corner (160 × 110 px, smaller on a touch screen) shows:
+  - the drawing as a sketch: strokes as thin lines in their colours (at most 64 points each), images as grey boxes;
+  - this device's view as a dashed outline;
+  - the others' views as rectangles in their colours, and their pointers as dots.
+
+  The map frames the drawing and every view, so a member far away is still on it. A press or a drag on the map moves this device's view there, at the same zoom. The map button in the toolbar hides it and shows it again (remembered in `peerkit.whiteboard`); an empty board with nobody on it shows no map.
+- On a wide screen at start the main area's front tool (the Editor) is the active panel, unless a tab had been chosen before the window got wide. Before, the Chat was, only because it is the first tab on a phone.
+- Messages: the new channel `presence`, and the new awareness fields `view` in the Editor and the Whiteboard. No new protocol number: older devices ignore all three, and their marks just don't show.
+- Differences from the plan: the Editor also got the rail for the whole document and the edge marks, since a stripe beside lines that aren't on screen shows nothing; the room bar's chips say where each member is as well.
+- Tests: the app test (71 checks, from 61) covers the tool this device reports, a member's mark on a tab and its chip, a forged place, the Editor's stripe and rail from a member's lines and lines that make no sense; the desktop test (51, from 46) covers panels: the panel in front reported, a mark on a panel tab, bringing other panels forward; the Monaco test (41, from 38) covers the rail and the lines Monaco reports; the whiteboard test (108, from 96) covers the view sent and following a pan, the map frame, a member far away on the map with its pointer, a press on the map moving the view, a forged view, and the map button. 908 checks in all. Mutation-checked: lines in view never sent, the tab change not reported, the others' views left out of the map's frame, a press on the map doing nothing. Checked in Node, not in a browser.
+
+**Checklist**
+- [ ] On a phone and a laptop in the same room: switching tabs (or panels) on one moves the coloured stripe on the other's tabs within a moment; locking the phone takes its stripe away.
+- [ ] Editor: scroll a long document on one device; on the other the stripe follows beside the same lines, the rail mark moves, and a click on it goes there.
+- [ ] Whiteboard: the minimap shows the drawing and the other person's view; pan on one device and the rectangle moves on the other; a press on the map goes there.
+
 ---
 
 ## Postponed
@@ -1220,6 +1252,19 @@ Put on hold on 2026-09-14 with no date; they come back once it's clear where the
 - [ ] Settings → Editor → CodeMirror, then back to Monaco: the open document stays open, where the cursor was.
 - [ ] Monaco in the dark theme, and in a narrow side panel: the find widget and suggestions aren't cut off.
 - [ ] Choose Monaco on a phone: it works, if less comfortably.
+
+### Voice that stayed on "connecting…" while the route was still being found (2026-10-08, 0.17.1)
+
+**Why:** reported twice: people joined voice and saw "Connecting…" that never ended. The console said `no audio from Chrome on Mac; dialing again {ice: 'checking', connection: 'connecting'}`, and `ID "pk-…" is taken`.
+
+**As built**
+- A call that brought no audio within 10 s was closed and dialled again, even when its ICE was still checking routes. Through a TURN relay that can take longer than 10 s, and each new call started the search over, so it could never connect. A call whose ICE is still `new`, `checking` or `disconnected` is now given up to 45 s; one that fails is restarted by the call itself (`mediacall.js`) as before, and a call that connected but carries no sound is still dialled again after 10 s.
+- The warning now lists the ICE candidates each side sent and received by type (`host`, `srflx`, `relay`; `call.candidates`), so the next report says whether routes went missing or the relay wasn't reachable.
+- `ID "pk-…" is taken` is peerjs's own log of a device trying to hold the anchor while someone else does; it connects to the holder instead. It is harmless.
+- Tests: the voice test (58 checks, from 56): a call still checking is waited for, and given up after 45 s.
+
+**Checklist**
+- [ ] Two devices on different networks join voice: they hear each other, even when it takes more than 10 s; if not, the console's "no audio" warning has the candidate counts.
 
 ## Backlog (to triage)
 

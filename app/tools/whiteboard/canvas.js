@@ -100,6 +100,7 @@ export class BoardView {
 	 * @param {() => void} options.onSelect the selection changed
 	 * @param {(state: {pointer, stroke}) => void} options.onLive what the others should see of this device now
 	 * @param {(e: PointerEvent) => boolean} options.blocked true when this press only closes something
+	 * @param {() => void} [options.onCamera] the view moved or changed size
 	 */
 	constructor(options) {
 		Object.assign(this, options);
@@ -218,6 +219,20 @@ export class BoardView {
 	setCamera({ x, y, zoom }) {
 		this.camera = { x, y, zoom: clampZoom(zoom) };
 		this.requestRender();
+		this.onCamera?.();
+	}
+
+	/** What this view shows, [x, y, w, h] in board units. */
+	viewRect() {
+		const { minX, minY, maxX, maxY } = this.viewBounds();
+		return [round(minX), round(minY), round(maxX - minX), round(maxY - minY)];
+	}
+
+	/** Move the view so a board point is in its middle, at the same zoom. */
+	centerOn(x, y) {
+		const { w, h } = this.viewSize();
+		const { zoom } = this.camera;
+		this.setCamera({ x: x - w / 2 / zoom, y: y - h / 2 / zoom, zoom });
 	}
 
 	/** Zoom by `factor`, keeping the board point under (sx, sy) (px from the top-left of the stage) where it is. */
@@ -286,6 +301,7 @@ export class BoardView {
 			this.fitContent();
 		}
 		this.requestRender();
+		this.onCamera?.();
 	}
 
 	/** Draw at the next frame: the board too, or (base = false) only what is live on top of it. */

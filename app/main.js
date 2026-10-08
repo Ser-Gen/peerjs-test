@@ -5,6 +5,7 @@ import { IceConfig } from './turn.js';
 import { dropShare, peekShare, takeShare } from './share.js';
 import { registerServiceWorker } from './pwa.js';
 import { MAX_VOLUME, Voice } from './voice.js';
+import { Presence } from './presence.js';
 import { button, h, icon, openDialog, toast } from './ui/dom.js';
 import { ToolLayout, WIDE, loadDock } from './ui/layout.js';
 import { renderQR } from './ui/qr.js';
@@ -84,6 +85,8 @@ const room = entry
 	: null;
 
 const voice = room ? new Voice(room) : null;
+// Which tool each member is looking at: marks on the tabs and in the room bar.
+const presence = room ? new Presence(room, () => layout?.current() ?? null) : null;
 
 let everOpen = false;
 let layout = null; // where the tools are shown: bottom tabs or desktop panels (app/ui/layout.js)
@@ -138,6 +141,7 @@ if (room) {
 	room.on('turn', turn => roomStore.update(code, { turn }));
 	ice.on('change', () => room.shareTurn()); // renewed credentials
 	voice.on('change', renderRoomBar);
+	presence.on('change', renderPresence);
 	window.peerkit = room; // handy for debugging from the console
 	// Fetch the desktop layout while the room is found, so the panels are ready when it opens.
 	if (matchMedia(WIDE).matches) loadDock().catch(() => {});
@@ -154,6 +158,7 @@ if (!room) peekShare().then(share => {
 window.addEventListener('hashchange', () => location.reload());
 window.addEventListener('pagehide', () => {
 	voice?.destroy();
+	presence?.destroy();
 	room?.destroy();
 });
 window.addEventListener('pageshow', e => {
@@ -233,6 +238,13 @@ function onMembers() {
 		roomStore.update(code, { names });
 	}
 	render();
+	renderPresence(); // a new name or colour on the tabs
+}
+
+/** The others' marks on the tabs of the tools they look at, and the tool in their chip's title. */
+function renderPresence() {
+	layout?.setPresence(presence.byTool());
+	renderRoomBar();
 }
 
 // --- rendering ---
@@ -318,7 +330,8 @@ function renderRoomBar() {
 	const chips = [chip(room.self, 'You', `${room.self.name} (this device)`, voice.selfMark)];
 	for (const member of members) {
 		const route = member.route ? (member.route.relayed ? 'relayed' : 'direct') : null;
-		const details = [member.rtt != null && `${member.rtt} ms`, route].filter(Boolean).join(', ');
+		const where = TOOLS.find(tool => tool.id === presence.toolOf(member.peerId))?.title;
+		const details = [where && `in ${where}`, member.rtt != null && `${member.rtt} ms`, route].filter(Boolean).join(', ');
 		chips.push(chip(member, member.name, details ? `${member.name}: ${details}` : member.name, voice.mark(member.peerId)));
 	}
 	bar.members.replaceChildren(...chips); // nothing to tap in there
@@ -743,7 +756,10 @@ function mountTools() {
 		side: ['chat'],
 		front: 'editor',
 		onChange: render,
+		onFront: () => presence.update(),
 	});
+	presence.update();
+	renderPresence();
 	for (const tool of TOOLS) tool.mount(layout.element(tool.id), room, {
 		// Tools that keep data per room (the editor's documents) key it by the room ID, the same on every device.
 		room: roomIds(code).id,

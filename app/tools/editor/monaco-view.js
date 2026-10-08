@@ -76,6 +76,11 @@ export class MonacoView {
 			fixedOverflowWidgets: true, // suggestions and hovers aren't cut off at the panel's edge
 			wordBasedSuggestions: 'currentDocument',
 		});
+		this.viewListeners = new Set();
+		const viewChanged = () => {
+			for (const fn of [...this.viewListeners]) fn();
+		};
+		this.viewSubs = [this.editor.onDidScrollChange(viewChanged), this.editor.onDidLayoutChange(viewChanged), this.model.onDidChangeContent(viewChanged)];
 		this.binding = new MonacoBinding({ Y, monaco, editor: this.editor, model: this.model, text, awareness, undoManager });
 		// The document's Y.UndoManager instead of Monaco's own undo, which would also undo the others' edits.
 		const { KeyMod, KeyCode } = monaco;
@@ -89,6 +94,36 @@ export class MonacoView {
 			this.editor.setSelection(monaco.Selection.fromPositions(anchor, head));
 			this.editor.revealPositionInCenter(head);
 		}
+	}
+
+	onView(fn) {
+		this.viewListeners.add(fn);
+		return () => this.viewListeners.delete(fn);
+	}
+
+	visibleLines() {
+		const ranges = this.editor.getVisibleRanges();
+		if (!ranges.length) return { top: 0, bottom: 0 };
+		return { top: ranges[0].startLineNumber - 1, bottom: ranges.at(-1).endLineNumber - 1 };
+	}
+
+	lineSpan(line) {
+		const count = this.model.getLineCount();
+		const n = Math.min(Math.max(line, 0), count - 1) + 1;
+		const origin = this.editor.getDomNode()?.getBoundingClientRect().top ?? 0;
+		const scroll = this.editor.getScrollTop();
+		const top = this.editor.getTopForLineNumber(n);
+		// The next line's top, so a wrapped line counts whole; the last one is one line high.
+		const bottom = n < count ? this.editor.getTopForLineNumber(n + 1) : top + this.editor.getOption(this.monaco.editor.EditorOption.lineHeight);
+		return { top: origin + top - scroll, bottom: origin + bottom - scroll };
+	}
+
+	lineCount() {
+		return this.model.getLineCount();
+	}
+
+	revealLine(line) {
+		this.editor.revealLineNearTop(Math.min(Math.max(line, 0), this.model.getLineCount() - 1) + 1);
 	}
 
 	setIndent(lang) {
@@ -145,6 +180,8 @@ export class MonacoView {
 	}
 
 	destroy() {
+		this.viewListeners.clear();
+		for (const sub of this.viewSubs) sub.dispose();
 		this.binding.destroy();
 		this.editor.dispose();
 		this.model.dispose();

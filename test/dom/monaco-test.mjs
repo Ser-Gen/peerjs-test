@@ -265,6 +265,17 @@ awarenessB.setLocalStateField('user', { name: 'B', color: '#0c8599', colorLight:
 awarenessB.setLocalStateField('cursor', { anchor: Y.createRelativePositionFromTypeIndex(ytextB, 2), head: Y.createRelativePositionFromTypeIndex(ytextB, 2) });
 await until('a plain cursor from B shows again', () => rootA.querySelector('.peerkit-yname')?.textContent === 'B');
 
+// Where B is in the document: a mark on A's rail and a stripe, drawn from Monaco's line positions.
+awarenessB.setLocalStateField('view', { top: 2, bottom: 3 });
+await until('the lines B sees show on A’s rail', () => rootA.querySelector('.editor-rail-mark')?.title === 'B sees lines 3–4' && rootA.querySelector('.editor-sight i'));
+await until('and Monaco tells B which lines A sees', () => {
+	const view = [...awarenessB.getStates()].find(([client]) => client !== docB.clientID)?.[1]?.view;
+	return Number.isInteger(view?.top) && view.bottom >= view.top;
+});
+rootA.querySelector('.editor-rail-mark').click();
+awarenessB.setLocalStateField('view', null);
+await until('and the mark goes when B shows nothing', () => !rootA.querySelector('.editor-rail-mark'));
+
 // Document options apply to Monaco.
 byLabel(rootA, 'Document options').click();
 let sheet = lastDialog();

@@ -131,6 +131,7 @@ const { default: whiteboard } = await import(`${ROOT}/app/tools/whiteboard/white
 const { default: chat } = await import(`${ROOT}/app/tools/chat/chat.js`);
 const { Boards } = await import(`${ROOT}/app/tools/whiteboard/boards.js`);
 const { itemBounds, packPoints, simplify, hits, unionBounds } = await import(`${ROOT}/app/tools/whiteboard/ink.js`);
+const { mapFrame, readView } = await import(`${ROOT}/app/tools/whiteboard/minimap.js`);
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let failures = 0;
@@ -596,6 +597,47 @@ await sleep(300);
 check('forged items are left out, and nothing breaks', counts(A) === beforeForged && counts(B) === beforeForged, `${counts(A)} / ${beforeForged}`);
 const chip = [...A.root.querySelectorAll('.presence-chip')].find(el => el.textContent.includes('Desk'));
 check('a member’s name shows as text, with a safe colour', chip?.textContent === '<b>Desk</b>' && !chip.querySelector('b') && chip.getAttribute('style').includes('#0c8599'));
+deskDoc.awareness.setLocalState({ user: { name: 'Desk', color: '#5c7cfa' }, board: null });
+
+// --- where the others are: their views, and the minimap ---
+
+check('a view is four finite numbers with a size', readView([1, 2, 30, 40]) && !readView([1, 2, 0, 40]) && !readView([1, 2, 30]) && !readView([1, 'x', 3, 4])
+	&& !readView([1e9, 0, 10, 10]) && !readView({ 0: 1, 1: 2, 2: 3, 3: 4, length: 4 }));
+const frame = mapFrame({ minX: 0, minY: 0, maxX: 1000, maxY: 500 }, 160, 110);
+// 1000 × 500 in 160 × 110 with 6 px of padding: the width decides (148 px), and the 74 px of height are centred.
+check('the map frame fits the box inside its padding, centred', Math.abs(frame.scale - 0.148) < 1e-9
+	&& Math.abs(-frame.x * frame.scale - 6) < 1e-6 && Math.abs(-frame.y * frame.scale - 18) < 1e-6, JSON.stringify(frame));
+const stateOf = name => [...deskDoc.awareness.getStates().values()].find(state => state?.user?.name === name);
+await until('each device tells the others what it sees of the board', () => readView(stateOf('Laptop')?.view) && stateOf('Laptop').board === boardId);
+const viewBefore = stateOf('Laptop').view;
+stageOf(A).dispatchEvent(new window.WheelEvent('wheel', { deltaX: 300, deltaY: 200, bubbles: true, cancelable: true }));
+await until('and again when its view moves', () => stateOf('Laptop').view[0] > viewBefore[0] + 250 && stateOf('Laptop').view[1] > viewBefore[1] + 150, 3000, () => JSON.stringify(stateOf('Laptop').view));
+const mapOf = dev => dev.root.querySelector('.wb-map');
+const mapOps = dev => mapOf(dev).querySelector('canvas').getContext('2d').ops;
+check('a board with a drawing shows the minimap', !mapOf(A).closest('[hidden]') && !mapOf(A).classList.contains('empty'));
+await sleep(50);
+mapOf(A).querySelector('canvas').getContext('2d').ops = [];
+deskDoc.awareness.setLocalState({ user: { name: 'Desk', color: '#5c7cfa' }, board: boardId, view: [5000, 5000, 400, 300], pointer: [5200, 5150] });
+const deskRect = () => mapOps(A).filter(op => op[0] === 'strokeRect').find(([, x, y, w, h]) => y + h > 100 && y + h <= 110 && x >= 0 && x + w <= 160 && y >= 0);
+await until('a member far away is on the map, its view at the edge the frame grew to', () => deskRect(), 3000, () => JSON.stringify(mapOps(A).filter(op => op[0] === 'strokeRect')));
+const [, rx, ry, rw, rh] = deskRect();
+check('with its pointer as a dot inside its view', mapOps(A).some(op => op[0] === 'arc' && op[1] > rx && op[1] < rx + rw && op[2] > ry && op[2] < ry + rh));
+const press = (type, x, y) => mapOf(A).querySelector('canvas').dispatchEvent(new window.PointerEvent(type, { pointerId: 40, clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true }));
+press('pointerdown', rx + rw / 2, ry + rh / 2);
+press('pointerup', rx + rw / 2, ry + rh / 2);
+await until('a press on the map takes this device there', () => {
+	const [x, y, w, h] = stateOf('Laptop').view;
+	return Math.abs(x + w / 2 - 5200) < 30 && Math.abs(y + h / 2 - 5150) < 30;
+}, 3000, () => JSON.stringify(stateOf('Laptop').view));
+check('without drawing on the board', counts(A) === counts(B));
+deskDoc.awareness.setLocalState({ user: { name: 'Desk', color: '#5c7cfa' }, board: boardId, view: ['far', 0, 1, 1] });
+await sleep(100);
+check('a forged view is left out', errors.length === 0 && !mapOps(A).some(op => op.includes('far')));
+byLabel(A.root, 'Map of the board, with where the others are').click();
+check('the map button hides the minimap, and remembers', mapOf(A).hidden && JSON.parse(localStorage.getItem('peerkit.whiteboard')).map === false);
+byLabel(A.root, 'Map of the board, with where the others are').click();
+check('and shows it again', !mapOf(A).hidden && byLabel(A.root, 'Map of the board, with where the others are').getAttribute('aria-pressed') === 'true');
+A.root.querySelector('[aria-label="Show the whole board"]').click();
 deskDoc.awareness.setLocalState({ user: { name: 'Desk', color: '#5c7cfa' }, board: null });
 
 // --- the unread mark, and leaving the page ---

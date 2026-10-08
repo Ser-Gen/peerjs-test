@@ -8,6 +8,7 @@ import { Boards, MAX_IMAGES, MAX_NAME } from './boards.js';
 import { BoardView, PAPER, drawItem } from './canvas.js';
 import { canReadClipboard, clipboardImages, decodeImage, imageFiles, prepareImage } from './images.js';
 import { MAX_POINTS, itemBounds, unionBounds } from './ink.js';
+import { Minimap, readView } from './minimap.js';
 
 const PREFS_KEY = 'peerkit.whiteboard';
 const PREFS_VERSION = 1;
@@ -36,7 +37,10 @@ const MAX_LIVE_SIZE = 200;
  * The shared whiteboard. Boards live in a Y.Doc of their own (boards.js, kept and synced by app/roomdoc.js on
  * ch 'board'), so they are on every device in the room, a newcomer gets them, and drawings made while apart merge.
  * A finished stroke is simplified and stored; while it is drawn the others see it through awareness:
- *   { user: {name, color}, board: open board id | null, pointer: [x, y] | null, stroke: {kind, color, size, points} | null }
+ *   { user: {name, color}, board: open board id | null, pointer: [x, y] | null, stroke: {kind, color, size, points} | null,
+ *     view: [x, y, w, h] | null }
+ * `view` is what the member's screen shows of the board, for the minimap (minimap.js), which shows the drawing and
+ * everyone's views; a press on it goes there.
  * Undo takes back only this device's own changes (Y.UndoManager on the local origin). Images come from the
  * clipboard (Ctrl+V, or the Paste button through the Clipboard API), a file or a drop, and are stored in the
  * board document itself, made small first (images.js).
@@ -54,6 +58,9 @@ export default {
 
 const coarse = () => matchMedia('(pointer: coarse)').matches;
 
+/** The others' views (and this one's) are sent at most this often while panning and zooming. */
+const VIEW_EVERY = 200;
+
 function loadPrefs() {
 	const raw = readJSON(PREFS_KEY);
 	const ok = raw?.version === PREFS_VERSION;
@@ -69,6 +76,7 @@ function loadPrefs() {
 		pen: style('pen'),
 		highlighter: style('highlighter'),
 		last: ok && raw.last && typeof raw.last === 'object' && !Array.isArray(raw.last) ? raw.last : {},
+		map: !ok || raw.map !== false, // the minimap, on unless turned off
 	};
 }
 
@@ -136,7 +144,16 @@ class WhiteboardTool {
 			onSelect: () => this.renderTools(),
 			onLive: state => this.setLocal(state),
 			blocked: () => this.closeMenu(), // a tap on the board while a popover is open only closes it
+			onCamera: () => this.cameraMoved(),
 		});
+		this.minimap = new Minimap({
+			items: () => (this.current ? this.boards.items(this.current) : []),
+			remote: () => this.remoteStates().filter(state => state.board === this.current),
+			view: () => this.view.viewRect(),
+			visible: () => Boolean(this.current) && this.prefs.map && this.ctx.visible(),
+			onJump: (x, y) => this.view.centerOn(x, y),
+		});
+		this.viewTimer = null;
 
 		this.fileInput = h('input', {
 			type: 'file',
@@ -166,14 +183,15 @@ class WhiteboardTool {
 		this.deleteBtn = iconButton('trash', 'Delete the selection (Delete)', () => this.deleteSelection());
 		this.imageBtn = iconButton('image', 'Add an image', () => (canReadClipboard() ? this.toggleMenu('image') : this.fileInput.click()), 'icon-btn push');
 		this.fitBtn = iconButton('fit', 'Show the whole board', () => this.view.fitContent());
+		this.mapBtn = iconButton('map', 'Map of the board, with where the others are', () => this.toggleMap());
 		this.tools = h('div', { class: 'wb-tools', role: 'toolbar', 'aria-label': 'Drawing tools' },
-			...this.toolButtons.values(), h('span', { class: 'wb-sep' }), this.styleBtn, this.deleteBtn, this.imageBtn, this.fitBtn);
+			...this.toolButtons.values(), h('span', { class: 'wb-sep' }), this.styleBtn, this.deleteBtn, this.imageBtn, this.fitBtn, this.mapBtn);
 		this.popover = h('div', { class: 'wb-popover', hidden: true });
 		this.message = h('div', { class: 'editor-message' });
 		this.el = h('div', { class: 'whiteboard' },
 			this.fileInput,
 			h('div', { class: 'editor-bar' }, this.boardButton, this.presence, this.undoBtn, this.redoBtn, this.moreBtn),
-			h('div', { class: 'wb-body' }, this.view.el, this.popover, this.message),
+			h('div', { class: 'wb-body' }, this.view.el, this.minimap.el, this.popover, this.message),
 			this.tools);
 		root.append(this.el);
 
@@ -223,11 +241,13 @@ class WhiteboardTool {
 	destroy() {
 		this.destroyed = true;
 		clearTimeout(this.syncTimer);
+		clearTimeout(this.viewTimer);
 		this.unsubscribe.forEach(fn => fn());
 		document.removeEventListener('paste', this.onPaste);
 		document.removeEventListener('pointerdown', this.onOutside, true);
 		this.sheet?.dialog.close();
 		this.view.destroy();
+		this.minimap.destroy();
 		this.boards?.destroy();
 		this.data.destroy();
 		this.el.remove();
@@ -260,9 +280,10 @@ class WhiteboardTool {
 		this.boards.on('undo', id => {
 			if (id === this.current) this.renderUndo();
 		});
-		awareness.setLocalState({ user: { name: this.room.self.name, color: this.room.self.color }, board: null, pointer: null, stroke: null });
+		awareness.setLocalState({ user: { name: this.room.self.name, color: this.room.self.color }, board: null, pointer: null, stroke: null, view: null });
 		awareness.on('change', () => {
 			this.view.requestRender(false);
+			this.minimap.requestRender();
 			this.renderPresence();
 		});
 		doc.on('update', (update, origin) => {
@@ -280,6 +301,27 @@ class WhiteboardTool {
 		this.load();
 		this.view.resize();
 		this.view.requestRender();
+		this.minimap.requestRender();
+	}
+
+	// --- where the others are: the views on the minimap ---
+
+	/** The view moved: tell the others (at most every VIEW_EVERY ms), and move this device's outline on the map. */
+	cameraMoved() {
+		this.minimap.requestRender();
+		if (this.viewTimer || !this.current) return;
+		this.viewTimer = setTimeout(() => {
+			this.viewTimer = null;
+			if (!this.current) return;
+			const rect = this.view.viewRect();
+			if (JSON.stringify(rect) !== JSON.stringify(this.data.awareness?.getLocalState()?.view)) this.setLocal({ view: rect });
+		}, VIEW_EVERY);
+	}
+
+	toggleMap() {
+		this.savePrefs({ map: !this.prefs.map });
+		this.render();
+		this.minimap.requestRender();
 	}
 
 	// --- boards ---
@@ -293,6 +335,7 @@ class WhiteboardTool {
 		} else if (this.current) {
 			this.currentName = this.boards.read(this.current).name;
 			this.view.itemsChanged();
+			this.minimap.requestRender();
 		} else {
 			this.openInitial(); // e.g. another member made the first board
 		}
@@ -318,7 +361,8 @@ class WhiteboardTool {
 		this.boards.undoManager(id); // from now on, what this device does here can be undone
 		this.render(); // the stage is shown, so it has a size
 		this.view.open(this.cameras.get(id) ?? null);
-		this.setLocal({ board: id, pointer: null, stroke: null });
+		this.setLocal({ board: id, pointer: null, stroke: null, view: this.view.viewRect() });
+		this.minimap.requestRender();
 		this.rememberLast(id);
 	}
 
@@ -327,7 +371,9 @@ class WhiteboardTool {
 		this.cameras.set(this.current, { ...this.view.camera });
 		this.view.close();
 		this.current = null;
-		this.setLocal({ board: null, pointer: null, stroke: null });
+		clearTimeout(this.viewTimer);
+		this.viewTimer = null;
+		this.setLocal({ board: null, pointer: null, stroke: null, view: null });
 	}
 
 	createBoard() {
@@ -536,6 +582,7 @@ class WhiteboardTool {
 				board: typeof state?.board === 'string' ? state.board : null,
 				pointer: readPointer(state?.pointer),
 				stroke: readLiveStroke(state?.stroke),
+				view: readView(state?.view),
 			}));
 	}
 
@@ -566,6 +613,8 @@ class WhiteboardTool {
 		this.undoBtn.hidden = this.redoBtn.hidden = !open;
 		this.moreBtn.disabled = !open;
 		this.view.el.hidden = !open;
+		this.minimap.el.hidden = !open || !this.prefs.map;
+		this.mapBtn.setAttribute('aria-pressed', String(this.prefs.map));
 		this.tools.hidden = !open;
 		if (!open) this.closeMenu();
 		this.renderTools();

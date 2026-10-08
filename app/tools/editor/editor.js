@@ -17,13 +17,26 @@ const MAX_NAME = 80;
 const SIZE_LABELS = { small: 'Small', medium: 'Medium', large: 'Large' };
 const FALLBACK_COLOR = '#0c8599';
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
+const VIEW_EVERY = 150; // ms between updates of the lines this device has in view
+const MAX_LINE = 10_000_000;
+const EDGE = 6; // px of a stripe kept at the edge for a member whose lines are out of view
+
+/** The lines a member has in view, from its awareness state: {top, bottom}, or null. */
+export function readSight(view) {
+	if (!view || typeof view !== 'object') return null;
+	const { top, bottom } = view;
+	if (!Number.isInteger(top) || !Number.isInteger(bottom) || top < 0 || bottom < top || bottom > MAX_LINE) return null;
+	return { top, bottom };
+}
 
 /*
  * Data (one Y.Doc per room, synced by app/docsync.js and kept in IndexedDB as `peerkit.doc:<room ID>`):
  *   map 'docs': id → Y.Map { name: string, lang: key of LANGS, created: ms, text: Y.Text }
  * Deleting a document deletes its Y.Map, so a rename racing a delete can't bring it back half-empty.
- * Awareness state: { user: {name, color, colorLight}, doc: open document id | null, cursor } (cursor: y-codemirror.next's
- * field, which monaco-binding.js uses too).
+ * Awareness state: { user: {name, color, colorLight}, doc: open document id | null, cursor, view: {top, bottom} | null }
+ * (cursor: y-codemirror.next's field, which monaco-binding.js uses too; view: the lines in view, from 0). The others'
+ * lines in view show as a stripe in their colour at the left edge, and the rail at the right shows where everyone is
+ * in the whole document (a click on a mark goes there).
  * The data needs only vendor/yjs.js. A document is shown in CodeMirror (cm-view.js) or Monaco (monaco-view.js), as chosen
  * in Settings (prefs.js); each is loaded the first time a document opens in it.
  */
@@ -99,6 +112,13 @@ class EditorTool {
 		this.searchBtn = iconButton('search', 'Search', () => this.toggleSearch(), 'icon-btn push');
 		this.moreBtn = iconButton('more', 'Document options', () => this.showOptions());
 		this.host = h('div', { class: 'editor-host', hidden: true });
+		this.sight = h('div', { class: 'editor-sight', 'aria-hidden': 'true', hidden: true });
+		this.rail = h('div', { class: 'editor-rail', hidden: true }, h('div', { class: 'editor-rail-mine' }));
+		this.stage = h('div', { class: 'editor-stage', hidden: true }, this.host, this.sight, this.rail);
+		this.marks = new Map(); // awareness client ID → {stripe, mark} of a member on this document, reused
+		this.sightFrame = 0;
+		this.viewTimer = null;
+		this.viewOff = null;
 		// Another member's name sits above their cursor and can cover a word. With a mouse, pointing at it hides it
 		// (styles); a finger has no hover, so a tap on a name hides the names for a moment.
 		this.peekTimer = null;
@@ -119,7 +139,7 @@ class EditorTool {
 		this.el = h('div', { class: 'editor' },
 			this.fileInput,
 			h('div', { class: 'editor-bar' }, this.docButton, this.presence, this.searchBtn, this.moreBtn),
-			h('div', { class: 'editor-body' }, this.host, this.message),
+			h('div', { class: 'editor-body' }, this.stage, this.message),
 			this.keys);
 		root.append(this.el);
 
@@ -154,6 +174,8 @@ class EditorTool {
 		this.destroyed = true;
 		clearTimeout(this.syncTimer);
 		clearTimeout(this.peekTimer);
+		clearTimeout(this.viewTimer);
+		cancelAnimationFrame(this.sightFrame);
 		this.unsubscribe.forEach(fn => fn());
 		this.darkQuery.removeEventListener('change', this.onScheme);
 		this.sheet?.dialog.close();
@@ -218,7 +240,10 @@ class EditorTool {
 		this.awareness = new lib.awarenessProtocol.Awareness(doc);
 		this.awareness.setLocalState({ user: this.user(), doc: null });
 		this.docs.observeDeep((events, transaction) => this.onDocsChange(events, transaction));
-		this.awareness.on('change', () => this.renderPresence());
+		this.awareness.on('change', () => {
+			this.renderPresence();
+			this.requestSight();
+		});
 		const provider = new DocProvider({ lib, room: this.room, doc, awareness: this.awareness });
 		doc.on('update', (update, origin) => {
 			if (origin?.provider === provider) this.ctx.notify();
@@ -405,9 +430,11 @@ class EditorTool {
 			dark: darkScheme(),
 		};
 		this.current = item;
-		this.host.hidden = false; // shown before the view measures it
+		this.host.hidden = this.stage.hidden = false; // shown before the view measures it
 		this.view = kind === 'monaco' ? new MonacoView(this.engine.lib, options) : new CodeMirrorView(this.engine.lib, options);
+		this.viewOff = this.view.onView(() => this.viewMoved());
 		this.awareness.setLocalStateField('doc', id);
+		this.viewMoved();
 		editorPrefs.rememberLast(this.ctx.room, id);
 		this.render();
 		if (focus || this.wantFocus) this.view.focus();
@@ -446,13 +473,94 @@ class EditorTool {
 
 	closeView() {
 		if (!this.view) return;
+		this.viewOff?.();
+		this.viewOff = null;
+		clearTimeout(this.viewTimer);
+		this.viewTimer = null;
 		this.selections.set(this.current.id, this.view.selection());
 		this.view.destroy();
 		this.view = null;
 		this.current = null;
 		this.setFocused(false);
 		const state = this.awareness.getLocalState();
-		if (state) this.awareness.setLocalState({ ...state, cursor: null, doc: null });
+		if (state) this.awareness.setLocalState({ ...state, cursor: null, doc: null, view: null });
+		this.requestSight();
+	}
+
+	// --- where the others are in the document ---
+
+	/** A scroll, a resize or an edit: tell the others which lines are in view (at most every VIEW_EVERY ms), and redraw the marks. */
+	viewMoved() {
+		this.requestSight();
+		if (this.viewTimer) return;
+		this.viewTimer = setTimeout(() => {
+			this.viewTimer = null;
+			if (!this.view) return;
+			const lines = this.view.visibleLines();
+			const old = readSight(this.awareness.getLocalState()?.view);
+			if (old?.top !== lines.top || old?.bottom !== lines.bottom) this.awareness.setLocalStateField('view', lines);
+		}, VIEW_EVERY);
+	}
+
+	requestSight() {
+		if (!this.sightFrame) this.sightFrame = requestAnimationFrame(() => this.renderSight());
+	}
+
+	/** Stripes at the left edge beside the lines the others see, and the rail of the whole document. */
+	renderSight() {
+		this.sightFrame = 0;
+		const here = this.view ? this.remoteStates().filter(state => state.doc === this.current?.id && state.view) : [];
+		for (const [id, marks] of this.marks) {
+			if (here.some(state => state.id === id)) continue;
+			marks.stripe.remove();
+			marks.mark.remove();
+			this.marks.delete(id);
+		}
+		this.sight.hidden = this.rail.hidden = !here.length;
+		if (!here.length) return;
+		const view = this.view;
+		const count = Math.max(1, view.lineCount());
+		const hostTop = this.host.getBoundingClientRect().top;
+		const height = this.host.clientHeight;
+		const share = line => `${(Math.min(line, count) / count) * 100}%`;
+		const mine = view.visibleLines();
+		Object.assign(this.rail.firstChild.style, { top: share(mine.top), height: share(mine.bottom + 1 - mine.top) });
+		here.forEach((state, i) => {
+			let marks = this.marks.get(state.id);
+			if (!marks) {
+				marks = {
+					stripe: h('i'),
+					mark: h('button', { type: 'button', class: 'editor-rail-mark', onclick: () => this.goTo(state.id) }),
+				};
+				this.marks.set(state.id, marks);
+				this.sight.append(marks.stripe);
+				this.rail.append(marks.mark);
+			}
+			const { top, bottom } = state.view;
+			const last = Math.min(bottom, count - 1);
+			const first = Math.min(top, last);
+			const label = `${state.name} sees lines ${first + 1}–${last + 1}`;
+			marks.mark.title = label;
+			marks.mark.setAttribute('aria-label', `${label}: go there`);
+			marks.mark.style.setProperty('--who', state.color);
+			Object.assign(marks.mark.style, { top: share(first), height: share(last + 1 - first) });
+			// Out of view, a short stripe at the edge says which way they are.
+			let y0 = view.lineSpan(first).top - hostTop;
+			let y1 = view.lineSpan(last).bottom - hostTop;
+			const side = y1 <= 0 ? 'above' : y0 >= height ? 'below' : null;
+			if (side === 'above') [y0, y1] = [0, EDGE];
+			else if (side === 'below') [y0, y1] = [height - EDGE, height];
+			else [y0, y1] = [Math.max(0, y0), Math.min(height || y1, y1)];
+			marks.stripe.dataset.side = side ?? '';
+			marks.stripe.style.setProperty('--who', state.color);
+			Object.assign(marks.stripe.style, { left: `${1 + i * 4}px`, top: `${y0}px`, height: `${Math.max(2, y1 - y0)}px` });
+		});
+	}
+
+	/** Scroll to the lines another member sees. */
+	goTo(clientId) {
+		const state = this.remoteStates().find(other => other.id === clientId);
+		if (state?.view && this.view && state.doc === this.current?.id) this.view.revealLine(state.view.top);
 	}
 
 	undoManager() {
@@ -513,7 +621,7 @@ class EditorTool {
 	render() {
 		const ready = Boolean(this.provider);
 		this.el.style.setProperty('--editor-font-size', `${FONT_SIZES[editorPrefs.font]}px`);
-		this.host.hidden = !this.view;
+		this.host.hidden = this.stage.hidden = !this.view;
 		this.keys.hidden = !this.view;
 		this.searchBtn.disabled = this.moreBtn.disabled = !this.view;
 		this.docButton.disabled = !ready;
@@ -556,16 +664,18 @@ class EditorTool {
 		const own = this.doc.clientID;
 		return [...this.awareness.getStates()]
 			.filter(([id]) => id !== own)
-			.map(([, state]) => ({
+			.map(([id, state]) => ({
+				id,
 				name: cleanName(state?.user?.name) || 'Device',
 				color: COLOR_RE.test(state?.user?.color) ? state.user.color : FALLBACK_COLOR,
 				doc: typeof state?.doc === 'string' ? state.doc : null,
+				view: readSight(state?.view),
 			}));
 	}
 
 	/** Who has which document open. Cursor moves fire awareness changes too, so re-render only on a real difference. */
 	renderPresence() {
-		const states = this.remoteStates();
+		const states = this.remoteStates().map(({ name, color, doc }) => ({ name, color, doc }));
 		const signature = JSON.stringify([this.current?.id, states]);
 		if (signature === this.presenceSignature) return;
 		this.presenceSignature = signature;

@@ -70,18 +70,21 @@ export class ToolLayout {
 	 * @param {string[]} [options.side] the default layout puts these in a column on the right, the rest in the main area
 	 * @param {string} [options.front] shown first in the main area
 	 * @param {() => void} [options.onChange] after switching between tabs and panels
+	 * @param {() => void} [options.onFront] the tool in front (current()) may have changed
 	 */
-	constructor({ host, tabs, tools, side = [], front = null, onChange = () => {} }) {
+	constructor({ host, tabs, tools, side = [], front = null, onChange = () => {}, onFront = () => {} }) {
 		this.host = host;
 		this.tabBar = tabs;
 		this.side = side;
 		this.front = front;
 		this.onChange = onChange;
+		this.onFront = onFront;
+		this.here = new Map(); // tool id → the members looking at it ({name, color}), marked on its tab
 		this.items = new Map(tools.map(tool => [tool.id, {
 			id: tool.id,
 			title: tool.title,
 			el: h('section', { class: 'tool', 'data-tool': tool.id }),
-			tab: h('button', { type: 'button', onclick: () => this.select(tool.id) }, tool.title),
+			tab: h('button', { type: 'button', onclick: () => this.pick(tool.id) }, tool.title, h('span', { class: 'tab-here', hidden: true })),
 			dockTabs: new Set(),
 			panel: null, // its dockview panel API while docked
 			seen: false, // could be seen at the last check, while docked
@@ -89,6 +92,7 @@ export class ToolLayout {
 			unread: false,
 		}]));
 		this.selected = tools[0]?.id ?? null;
+		this.picked = false; // a tool was brought to the front (not just the first tab by default)
 		this.lib = null;
 		this.dock = null;
 		this.dockEl = null;
@@ -127,7 +131,7 @@ export class ToolLayout {
 
 	/** Bring a tool to the front: its tab, or its panel within its group. */
 	activate(id) {
-		if (!this.dock) return this.select(id);
+		if (!this.dock) return this.pick(id);
 		const panel = this.dock.getPanel(id);
 		if (!panel) return;
 		if (this.dock.hasMaximizedGroup() && !panel.group.api.isMaximized()) this.dock.exitMaximizedGroup();
@@ -214,12 +218,46 @@ export class ToolLayout {
 		extra.el.remove();
 	}
 
+	/** The tool in front: the selected tab, or the active panel on a wide screen (a tool's own panel counts as its tool). */
+	current() {
+		if (!this.dock) return this.selected;
+		const id = this.dock.activePanel?.id;
+		if (!id) return null;
+		return this.items.has(id) ? id : this.extras.get(id)?.owner ?? null;
+	}
+
+	/** Who is looking at which tool (presence.js): a stripe in their colours on its tab. */
+	setPresence(byTool) {
+		this.here = byTool;
+		for (const item of this.items.values()) this.renderHere(item);
+	}
+
+	renderHere(item) {
+		const members = this.here.get(item.id) ?? [];
+		const title = members.length ? `${members.map(member => member.name).join(', ')} ${members.length === 1 ? 'is' : 'are'} here` : '';
+		for (const tab of [item.tab, ...item.dockTabs]) {
+			const mark = tab.querySelector('.tab-here');
+			mark.hidden = !members.length;
+			mark.replaceChildren(...members.map(member => h('i', { style: `--who: ${member.color}` })));
+			if (title) tab.title = title;
+			else tab.removeAttribute('title');
+		}
+	}
+
 	// --- tabs ---
+
+	/** A tab chosen, by the user or by a tool. */
+	pick(id) {
+		this.picked = true;
+		this.select(id);
+	}
 
 	select(id) {
 		if (!this.items.has(id)) return;
+		const changed = id !== this.selected;
 		this.selected = id;
 		if (this.dock) return this.activate(id);
+		if (changed) this.onFront();
 		for (const item of this.items.values()) {
 			const hidden = item.id !== id;
 			item.tab.setAttribute('aria-current', String(!hidden));
@@ -271,9 +309,10 @@ export class ToolLayout {
 		this.pending = null;
 		if (!lib || !this.query.matches) return;
 		this.moving(() => this.build(lib));
-		// The tool that was in front in the tabs stays in front.
-		this.dock.getPanel(this.selected)?.api.setActive();
+		// The tool that was in front in the tabs stays in front; otherwise the layout's own (the main area's front tool).
+		if (this.picked) this.dock.getPanel(this.selected)?.api.setActive();
 		this.changed();
+		this.onFront();
 	}
 
 	toTabs() {
@@ -284,6 +323,7 @@ export class ToolLayout {
 		this.moving(() => this.teardown());
 		this.select(this.items.has(active) ? active : this.selected);
 		this.changed();
+		this.onFront();
 	}
 
 	/** Back to the default: the main area and the side column. */
@@ -333,6 +373,7 @@ export class ToolLayout {
 				this.refresh();
 			}),
 			this.dock.onDidMaximizedGroupChange(() => this.refresh()),
+			this.dock.onDidActivePanelChange(() => this.onFront()),
 		];
 		for (const item of this.items.values()) item.seen = false;
 		this.ready = true;
@@ -448,10 +489,11 @@ export class ToolLayout {
 		const extra = this.extras.get(id);
 		if (extra) return this.extraTab(extra);
 		const item = this.items.get(id);
-		const element = h('div', { class: 'dv-default-tab dock-tab' }, h('span', { class: 'dv-default-tab-content' }, item?.title ?? id));
+		const element = h('div', { class: 'dv-default-tab dock-tab' }, h('span', { class: 'dv-default-tab-content' }, item?.title ?? id), h('span', { class: 'tab-here', hidden: true }));
 		if (item) {
 			item.dockTabs.add(element);
 			element.classList.toggle('notify', item.unread);
+			this.renderHere(item);
 		}
 		return {
 			element,

@@ -107,7 +107,7 @@ function check(name, ok, extra = '') {
 	console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${extra ? ` — ${extra}` : ''}`);
 	if (!ok) failures++;
 }
-async function until(name, fn, ms = 5000) {
+async function until(name, fn, ms = 5000, show = () => '') {
 	const start = Date.now();
 	for (;;) {
 		let value;
@@ -117,7 +117,7 @@ async function until(name, fn, ms = 5000) {
 			value = false;
 		}
 		if (value) return check(name, true, `${Date.now() - start} ms`);
-		if (Date.now() - start > ms) return check(name, false, 'timed out');
+		if (Date.now() - start > ms) return check(name, false, `timed out ${show()}`);
 		await sleep(10);
 	}
 }
@@ -183,6 +183,8 @@ if (MODE === 'start') {
 	// A wide window with a mouse: the tools are dockview panels instead of bottom tabs.
 	const code = newRoomCode();
 	const phone = new Room({ code, ice: { forRoom: null, adopt: () => false }, identity: { id: 'bbbbbbbbbbbbbbbb', name: 'Phone' } });
+	const placesHeard = [];
+	phone.on(`msg:${CH.PRESENCE}`, msg => placesHeard.push(msg.tool));
 	phone.start();
 	const phoneChat = await chatOf(phone);
 	await sleep(100);
@@ -202,6 +204,19 @@ if (MODE === 'start') {
 	await until('with the member linked', () => $('.member-chip:nth-child(2)')?.textContent === 'Phone');
 	check('the default layout: Stream, Editor, Whiteboard, Controller and Games in the main area, the Chat at the side', layout() === 'Chat | Stream+Editor+Whiteboard+Controller+Games', layout());
 	check('the Editor is in front in the main area', groupWith('Editor').front === 'Editor');
+	// The share waiting from Android brought the Chat forward, to offer its send sheet: that is where this device is.
+	await until('the member is told which panel this device has in front', () => placesHeard.at(-1) === 'chat', 3000, () => placesHeard.join());
+	phone.send(CH.PRESENCE, { type: 'here', tool: 'chat' });
+	await until('a member’s place shows on that panel’s tab', () => !tabOf('Chat').querySelector('.tab-here').hidden && tabOf('Chat').title === 'Phone is here');
+	check('the tab’s name stays as it was', tabOf('Chat').textContent === 'Chat');
+	const whiteboardTab = tabOf('Whiteboard').closest('.dv-tab');
+	whiteboardTab.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+	whiteboardTab.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	await until('bringing another panel to the front tells the member', () => placesHeard.at(-1) === 'whiteboard', 3000, () => placesHeard.join());
+	const editorTab = tabOf('Editor').closest('.dv-tab');
+	editorTab.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+	editorTab.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	await until('(back to the Editor)', () => placesHeard.at(-1) === 'editor' && groupWith('Editor').front === 'Editor');
 	// The member here runs no editor, so it never answers the sync: past "Loading" is what shows it loaded.
 	await until('and loads by itself, since it can be seen', () => /Syncing with the room|Write together/.test($('.editor-message:not([hidden])')?.textContent), 10000);
 	check('a tab can not be closed: there is no close button', !document.querySelector('.dock .dv-default-tab-action'));
@@ -330,6 +345,8 @@ if (MODE === 'start') {
 	const voiceCalls = [];
 	phone.on(`msg:${CH.VOICE}`, msg => voiceHeard.push(msg));
 	phone.on('call', call => voiceCalls.push(call));
+	const placesHeard = []; // which tool this device says it is looking at
+	phone.on(`msg:${CH.PRESENCE}`, msg => placesHeard.push(msg.tool));
 	phone.start();
 	const phoneChat = await chatOf(phone);
 	await sleep(100);
@@ -445,6 +462,31 @@ if (MODE === 'start') {
 	const [entry] = [...phoneDoc.getMap('docs').values()];
 	entry.get('text').insert(0, 'typed on the phone');
 	await until('typing on the member shows here', () => $('.cm-content')?.textContent.includes('typed on the phone'));
+
+	// Where the others are: the tool each looks at, on the tabs.
+	await until('the member is told which tool this device looks at', () => placesHeard.at(-1) === 'editor', 3000, () => placesHeard.join());
+	const tabMark = name => buttonByText($('#tabs'), name)?.querySelector('.tab-here');
+	phone.send(CH.PRESENCE, { type: 'here', tool: 'whiteboard' });
+	await until('a member’s place shows as a stripe in its colour on that tab', () => !tabMark('Whiteboard').hidden && tabMark('Whiteboard').querySelectorAll('i').length === 1
+		&& tabMark('Whiteboard').querySelector('i').getAttribute('style').includes(phone.self.color) && buttonByText($('#tabs'), 'Whiteboard').title === 'Phone is here');
+	check('and on no other tab', [...document.querySelectorAll('#tabs .tab-here')].filter(mark => !mark.hidden).length === 1);
+	check('the member’s chip says where it is', $('.member-chip:nth-child(2)').title.startsWith('Phone: in Whiteboard'), $('.member-chip:nth-child(2)').title);
+	phone.send(CH.PRESENCE, { type: 'here', tool: '<b>x</b>' });
+	await until('a place that isn’t a tool shows nowhere', () => [...document.querySelectorAll('#tabs .tab-here')].every(mark => mark.hidden));
+	phone.send(CH.PRESENCE, { type: 'here', tool: 'editor' });
+	await until('(the member moves to the Editor)', () => !tabMark('Editor').hidden);
+
+	// Where the others are in a document: a stripe beside the lines they see, and a mark on the rail.
+	const docId = [...phoneDoc.getMap('docs').keys()][0];
+	entry.get('text').insert(entry.get('text').length, '\nline 2\nline 3\nline 4');
+	phoneAwareness.setLocalState({ user: { name: 'Phone', color: '#0c8599' }, doc: docId, view: { top: 1, bottom: 2 } });
+	await until('a member on the same document gets a mark on the rail, with the lines it sees', () => $('.editor-rail-mark')?.title === 'Phone sees lines 2–3' && visible($('.editor-rail')));
+	check('and a stripe at the edge', visible($('.editor-sight')) && $('.editor-sight i')?.getAttribute('style').includes('#0c8599'));
+	const pageState = () => [...phoneAwareness.getStates().values()].find(state => state?.user?.name !== 'Phone');
+	await until('this device tells the member which lines it sees', () => Number.isInteger(pageState()?.view?.top) && pageState().view.bottom >= pageState().view.top);
+	$('.editor-rail-mark').click();
+	phoneAwareness.setLocalState({ user: { name: 'Phone', color: '#0c8599' }, doc: docId, view: { top: 3, bottom: 1 } });
+	await until('lines that make no sense are left out', () => !$('.editor-rail-mark') && !visible($('.editor-rail')));
 
 	// Whiteboard: a tab of its own, and its boards reach the member's board document.
 	const phoneBoards = new RoomDoc(phone, 'b'.repeat(32), { name: boardDocName('b'.repeat(32)), channel: CH.BOARD, awareness: true });
